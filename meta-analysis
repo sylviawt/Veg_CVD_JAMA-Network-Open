@@ -1,0 +1,2814 @@
+# Veg_CVD_JAMA-Network-Open
+# ------------------------------------------------------------------------------ #
+# 
+# Code for vegetarian diets and cardiometabolic risk factors: a meta-analysis
+# Analysis code and figure generation 
+#
+#
+# Author: 
+#
+# Tian Wang, Alistair M Senior, Shane Jose, Cynthia M. Kroeger, Andrius Masedunskas
+# tian.wang@sydney.edu.au
+# 
+# 
+# ------------------------------------------------------------------------------ #
+# Clear environment (except functions) and free up memory
+# ------------------------------------------------------------------------------ #
+rm(list = setdiff(ls(all.names = TRUE), lsf.str(all.names = TRUE)))
+gc()
+
+
+# ------------------------------------------------------------------------------ #
+# Load packages 
+# ------------------------------------------------------------------------------ #
+library(meta)  # To conduct meta-analysis
+library(dplyr) # Data manipulation
+library(readr) # Read files
+library(skimr) # Check data
+library(Cairo)
+library(common) # To add superscript ref numbers for studies
+
+# Function from Kulinskaya E, Hoaglin DC, Bakbergenuly I, Newman J. A Q statistic with constant weights for assessing heterogeneity in meta-analysis. Res Synth Methods. 2021 Nov;12(6):711-730. doi: 10.1002/jrsm.1491. Epub 2021 Jul 6. PMID: 33969638.
+source("fixedQmethodsForMD.r")
+
+# Set the meta functions to use DL method and do not include the common effects model
+settings.meta(method.tau="REML")
+
+# ------------------------------------------------------------------------------ #
+# Set wd and load meta csv file
+# ------------------------------------------------------------------------------ #
+#setwd("~/systematic review_veg diet on CVD/")
+
+
+# ------------------------------------------------------------------------------ #
+# Create a function to calculate confidence interval on bubble plots 
+# (or any other plots).
+#
+# Input: Meta-reg or lm model.
+# Output: A df with 1st column as lower CI, 2nd as upper CI.
+# ------------------------------------------------------------------------------ #
+func_calc_ci_pred <- function(metareg_model){
+        beta_cov_matrix <- vcov(metareg_model) # 2 x 2 (for data provided)
+        avg_base_vals <- metareg_model$X #19 x 2 (for data provided)
+        LDL_beta_coefs <- metareg_model$beta # 2 x 1 (for data provided)
+        
+        se_matrix_predicted = NULL # save space to store calculations
+        
+        for (i in 1:dim(avg_base_vals)[1]){
+                # Calculate individual S.E. for each study and get C.I.
+                calc_se = sqrt(t(avg_base_vals[i,]) %*% beta_cov_matrix %*% as.matrix(avg_base_vals[i,])) 
+                # (1x2) x (2x2) x (2x1) = (1 x 1)
+                ci_upper <- fitted.values(metareg_model)[i] + 1.96*calc_se
+                ci_lower <- fitted.values(metareg_model)[i] - 1.96*calc_se
+                
+                se_matrix_predicted <- rbind(se_matrix_predicted,cbind(ci_lower,ci_upper))
+                colnames(se_matrix_predicted) <- c("ci_lower", "ci_upper")
+        }
+        return(as.data.frame(se_matrix_predicted))
+}
+
+
+# ------------------------------------------------------------------------------ #
+# Bubble plot with confidence intervals
+# Inputs: metareg model (see ?bubble), 
+#         ci_obj: from func_calc_ci_pred -> see output type
+# Output: Bubble plot with Confidence intervals
+# ------------------------------------------------------------------------------ #
+func_bubble_with_ci <- function(metareg_model, 
+                                ci_obj, 
+                                x_lab = "", 
+                                deg_freedom = 10,
+                                x_lim = c(60, 170), 
+                                y_lim = c(-50, 10)){
+        # Extract CIs for each LDL study
+        ci.l = ci_obj$ci_lower
+        ci.u = ci_obj$ci_upper
+        
+        # Need corresponding x-values for CI lines on bubble plot
+        df_ci.l <- data.frame(x_vals = metareg_model$X[,2],ci.l)
+        df_ci.u <- data.frame(x_vals = metareg_model$X[,2],ci.u)
+        
+        # Order for smooth lowess lines on plot
+        ord_df_ci.l <- df_ci.l[order(df_ci.l$x_vals),]
+        ord_df_ci.u <- df_ci.u[order(df_ci.u$x_vals),]
+        
+        bubble(metareg_model, 
+               xlim = x_lim,
+               ylim = y_lim,
+               xlab = x_lab,
+               cex.studlab = 0.7,
+               bg = "green3",
+               regline = TRUE,
+               studlab = TRUE,
+               box = TRUE)
+        lines(smooth.spline(ord_df_ci.u, df = deg_freedom), col = "blue4", lty = 2)
+        lines(smooth.spline(ord_df_ci.l, df = deg_freedom), col = "blue4", lty = 2)
+}
+
+# ------------------------------------------------------------------------------ #
+# Load and clean data (classes etc.)
+# ------------------------------------------------------------------------------ #
+meta <- readxl::read_excel("Data_Veg diet_Meta-analysis_6May2023.xlsx")
+
+# ------------------------------------------------------------------------------ #
+# Transform variables into factor variables and add labels
+# ------------------------------------------------------------------------------ #
+meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)` <- factor(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`,
+                                levels = c(0,1,2),
+                                labels = c('People at risk of CVD',
+                                           'T2DM',
+                                           'CVD'))
+
+meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)` <- factor(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`,
+                                                                      levels = c(0,1,2),
+                                                                      labels = c('Vegan',
+                                                                                 'Lacto-vegetarian',
+                                                                                 'Lacto-ovo vegetarian'))
+
+meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)` <- 
+        factor(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`,
+               levels = c(0,1,2),
+               labels = c('Usual diet',
+                          'Active intervention with no energy restriction',
+                          'Active intervention with energy restriction'))
+
+meta$`Calorie restriction (0=N, 1=Y)` <- factor(meta$`Calorie restriction (0=N, 1=Y)`,
+                                                levels = c(0,1),
+                                                labels = c('No',
+                                                           'Yes'))
+
+meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)` <- factor(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`,
+                                                                                levels = c(0,1,2),
+                                                                                labels = c('No',
+                                                                                           'Yes',
+                                                                                           'No information on physical activity'))
+
+meta$`Med change (0=N, 1=Y, 2=NI on med use)` <- factor(meta$`Med change (0=N, 1=Y, 2=NI on med use)`,
+                                                        levels = c(0,1,2),
+                                                        labels = c('No medication change',
+                                                                   'Had medication change',
+                                                                   'No information on medication use'))
+
+meta$`Trial duration (0=<6 months, 1=6 to <12 months, 2=12+ months)` <- factor(meta$`Trial duration (0=<6 months, 1=6 to <12 months, 2=12+ months)`,levels = c(0,1,2),labels = c('<6 months','6 to less than 12 months','12+ months'))
+
+# ------------------------------------------------------------------------------ #
+# Meta-analysis for LDL
+# ------------------------------------------------------------------------------ #
+# Transform variables to numeric variables
+# ------------------------------------------------------------------------------ #
+meta$`LDL_Int_Mean ch_mmol/L` <- as.numeric(meta$`LDL_Int_Mean ch_mmol/L`)
+meta$`LDL_Int_SD_ch_mmol/L` <- as.numeric(meta$`LDL_Int_SD_ch_mmol/L`)
+meta$`LDL_Con_Mean ch_mmol/L` <- as.numeric(meta$`LDL_Con_Mean ch_mmol/L`)
+meta$`LDL_Con_SD_mmol/L` <- as.numeric(meta$`LDL_Con_SD_mmol/L`)
+
+meta$`LDL_Int_Mean ch_mg/dL` <- as.numeric(meta$`LDL_Int_Mean ch_mg/dL`)
+meta$`LDL_Int_SD_ch_mg/dL` <- as.numeric(meta$`LDL_Int_SD_ch_mg/dL`)
+meta$`LDL_Con_Mean ch_mg/dL` <- as.numeric(meta$`LDL_Con_Mean ch_mg/dL`)
+meta$`LDL_Con_SD_change_mg/dL` <- as.numeric(meta$`LDL_Con_SD_change_mg/dL`)
+
+#Forest plot for LDL grouped by disease status_______________________________________________________________________________
+
+#Remove repeated values from the same study and studies without the outcome
+#Barnard 2021
+meta[5,] <- NA
+meta[6,] <- NA
+meta[7,] <- NA
+
+#Bunner 2015
+meta[9,] <- NA
+
+#Mishra 2013
+meta[18,] <- NA
+
+#Nicholson 1999
+meta[19,] <- NA
+
+#Tang
+meta[24,] <- NA
+
+#Wright 2017
+meta[27,] <- NA
+
+
+#Remove missing values
+LDL_int_n_na <- na.omit(meta$LDL_n_Int)
+LDL_int_mean_na <- na.omit(meta$`LDL_Int_Mean ch_mg/dL`)
+LDL_int_sd_na <- na.omit(meta$`LDL_Int_SD_ch_mg/dL`)
+
+LDL_con_n_na <- na.omit(meta$LDL_n_Con)
+LDL_con_mean_na <- na.omit(meta$`LDL_Con_Mean ch_mg/dL`)
+LDL_con_sd_na <- na.omit(meta$`LDL_Con_SD_change_mg/dL`)
+
+author_na <- na.omit(meta$`Author, year`)
+
+refs <- as.character(c(21,34,36,31,38,27,22,25,40,26,32,33,39,37,28,23,30,24,35))
+
+labs<-author_na %p% supsc(refs)
+
+Control <- na.omit(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`)
+Disease <- na.omit(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`)
+Diet <- na.omit(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`)
+Energy_restriction <- na.omit(meta$`Calorie restriction (0=N, 1=Y)`)
+Physical_activity <- na.omit(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`)
+Trial_duration <- na.omit(meta$`Trial duration (0=<6 months, 1=6 to <12 months, 2=12+ months)`)
+
+#Forest plot of LDL grouped by disease status
+LDL_cont <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                     LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                     studlab = labs,
+                     byvar = Disease,
+                     print.byvar = TRUE,
+                     sm = "MD"))
+
+print(LDL_cont, digits=2)
+
+# Show forest plot - ADJUSTED BY ALISTAIR TO REMOVE COMMON and I2 and p for Heterogeneity note addition of common=F, print.I2=F, print.pval.Q=F
+CairoSVG("Figure 2.svg", width = 12, height = 10)
+
+p <- meta::forest(LDL_cont,
+             col.random = "blue",
+             col.diamond = "light green",
+             col.diamond.lines = "light green",
+             comb.fixed  = FALSE,
+             xlim = c(-70, 30),
+             digits = 1,
+             digits.sd = 1,
+             common=F,
+             print.I2 = F,
+             print.pval.Q=F)
+
+dev.off()
+
+# New function to get adjusted tests for heteorgeneity - ADDED BY ALISTAIR
+res1<-M2_and_M3_p_values(xT = as.numeric(LDL_int_mean_na), xC = as.numeric(LDL_con_mean_na), nC = as.numeric(LDL_con_n_na), nT = as.numeric(LDL_int_n_na), sC = as.numeric(LDL_con_sd_na), sT = as.numeric(LDL_int_sd_na))
+res1[3,]
+# New Q value and p-value to report.
+
+#Forest plot for LDL grouped by vegetarian diets_____________________________________________________
+LDL_veg <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                      LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                      studlab = author_na,
+                      byvar = Diet,
+                      print.byvar = TRUE,
+                      sm = "MD"))
+
+print(LDL_veg, digits=2)
+
+forest(LDL_veg,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-70, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot of LDL grouped by control diet______________________________________________________________________________________________
+LDL_con <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                      LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                      studlab = author_na,
+                      byvar = Control,
+                      print.byvar = TRUE,
+                      sm = "MD"))
+
+print(LDL_con, digits=2)
+
+meta::forest(LDL_con,
+             col.random = "blue",
+             col.diamond = "light green",
+             col.diamond.lines = "light green",
+             comb.fixed =FALSE,
+             xlim = c(-70, 30),
+             digits = 1,
+             digits.sd = 1,
+             common=F,
+             print.I2 = F,
+             print.pval.Q=F)
+
+#Forest plot for LDL grouped by calorie restriction_____________________________________________________
+LDL_cal <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                     LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                     studlab = author_na,
+                     byvar = Energy_restriction,
+                     print.byvar = TRUE,
+                     sm = "MD"))
+
+print(LDL_cal, digits=2)
+
+forest(LDL_cal,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-70, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# _____________________________________________________
+# Remove Ornish et al. for sensitivity analysis
+# _____________________________________________________
+# Ornish
+meta[20,] <- NA
+
+#Remove missing values
+LDL_int_n_na <- na.omit(meta$LDL_n_Int)
+LDL_int_mean_na <- na.omit(meta$`LDL_Int_Mean ch_mg/dL`)
+LDL_int_sd_na <- na.omit(meta$`LDL_Int_SD_ch_mg/dL`)
+
+LDL_con_n_na <- na.omit(meta$LDL_n_Con)
+LDL_con_mean_na <- na.omit(meta$`LDL_Con_Mean ch_mg/dL`)
+LDL_con_sd_na <- na.omit(meta$`LDL_Con_SD_change_mg/dL`)
+
+author_na <- na.omit(meta$`Author, year`)
+Disease <- na.omit(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`)
+
+#Forest plot of LDL grouped by disease status
+LDL_cont_sens1 <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                            LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                            studlab = author_na,
+                            byvar = Disease,
+                            print.byvar = TRUE,
+                            sm = "MD"))
+
+print(LDL_cont_sens1, digits=2)
+
+meta::forest(LDL_cont_sens1,
+             col.random = "blue",
+             col.diamond = "light green",
+             col.diamond.lines = "light green",
+             comb.fixed  = FALSE,
+             xlim = c(-70, 30),
+             digits = 1,
+             digits.sd = 1,
+             common=F,
+             print.I2 = F,
+             print.pval.Q=F)
+
+funnel(LDL_cont_sens1, comb.fixed=FALSE)
+
+# ------------------------------------------------------------------------------ #
+# Meta-regression for baseline of LDL
+# ------------------------------------------------------------------------------ #
+# Calculate average of LDL baseline values
+# ------------------------------------------------------------------------------ #
+meta$`LDL_base_int_mean_mg/dL` <- as.numeric(meta$`LDL_base_int_mean_mg/dL`)
+meta$`LDL_base_con_mean_mg/dL` <- as.numeric(meta$`LDL_base_con_mean_mg/dL`)
+
+meta$LDL_base_mean <- (meta$`LDL_base_int_mean_mg/dL`+meta$`LDL_base_con_mean_mg/dL`)/2
+
+# Extract non-missing values
+LDL_average_ba_na <- na.omit(meta$LDL_base_mean)
+
+LDL_average_base <- update(LDL_cont_sens1, byvar = LDL_average_ba_na, tau.common = TRUE, 
+                           comb.fixed = FALSE)
+
+a <- metareg(LDL_average_base)
+
+ldl_ci<-func_calc_ci_pred(a)
+ldl_ci
+
+ldl_ci <- as.data.frame(ldl_ci)
+
+ci.l = ldl_ci$ci_lower
+ci.u = ldl_ci$ci_upper
+
+df_ci.l <- data.frame(x_vals = a$X[,2],ci.l)
+df_ci.u <- data.frame(x_vals = a$X[,2],ci.u)
+
+bubble(a, 
+       xlab = "LDL baseline values (mg/dL)",
+       cex.studlab = 0.7,
+       xlim = c(60, 169),
+       ylim = c(-50, 20),
+       bg = "green3",
+       regline = TRUE,
+       studlab=TRUE,
+       box = TRUE)
+lines(df_ci.u[order(df_ci.u$x_vals),], col="blue4", lty=2)
+lines(df_ci.l[order(df_ci.l$x_vals),], col="blue4", lty=2)
+
+
+#Exclude imputed data____________________________________________________________________________
+#Nicholson 1999
+meta[19,] <- NA
+
+#Ornish 1990
+meta[20,] <- NA
+
+#Shah
+meta[21,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Remove missing values
+LDL_int_n_na <- na.omit(meta$LDL_n_Int)
+LDL_int_mean_na <- na.omit(meta$`LDL_Int_Mean ch_mg/dL`)
+LDL_int_sd_na <- na.omit(meta$`LDL_Int_SD_ch_mg/dL`)
+
+LDL_con_n_na <- na.omit(meta$LDL_n_Con)
+LDL_con_mean_na <- na.omit(meta$`LDL_Con_Mean ch_mg/dL`)
+LDL_con_sd_na <- na.omit(meta$`LDL_Con_SD_change_mg/dL`)
+
+author_na <- na.omit(meta$`Author, year`)
+
+Control <- na.omit(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`)
+Disease <- na.omit(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`)
+Diet <- na.omit(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`)
+Energy_restriction <- na.omit(meta$`Calorie restriction (0=N, 1=Y)`)
+Physical_activity <- na.omit(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`)
+
+#Forest plot for LDL grouped by disease status exclude imputed data_____________________________________________________
+LDL_cont_ex <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                      LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                      studlab = author_na,
+                      byvar = Disease,
+                      print.byvar = TRUE,
+                      sm = "MD"))
+
+print(LDL_cont_ex, digits=2)
+
+meta::forest(LDL_cont_ex,
+             col.random = "blue",
+             col.diamond = "light green",
+             col.diamond.lines = "light green",
+             comb.fixed =FALSE,
+             xlim = c(-50, 30),
+             digits = 1,
+             digits.sd = 1,
+             common=F,
+             print.I2 = F,
+             print.pval.Q=F)
+
+#Forest plot for LDL grouped by vegetarian diets_____________________________________________________
+LDL_veg_ex <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                     LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                     studlab = author_na,
+                     byvar = Diet,
+                     print.byvar = TRUE,
+                     sm = "MD"))
+
+print(LDL_veg_ex, digits=2)
+
+forest(LDL_veg_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-50, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for LDL grouped by control diets______________________________________________
+Control <- na.omit(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`)
+
+LDL_con_ex <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                        LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                        studlab = author_na,
+                        byvar = Control,
+                        print.byvar = TRUE,
+                        sm = "MD"))
+
+print(LDL_con_ex, digits=2)
+
+meta::forest(LDL_con_ex,
+             col.random = "blue",
+             col.diamond = "light green",
+             col.diamond.lines = "light green",
+             comb.fixed =FALSE,
+             xlim = c(-50, 30),
+             digits = 1,
+             digits.sd = 1,
+             common=F,
+             print.I2 = F,
+             print.pval.Q=F)
+
+#Forest plot for LDL grouped by calorie restriction_____________________________________________________
+LDL_cal_ex <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                     LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                     studlab = author_na,
+                     byvar = Energy_restriction,
+                     print.byvar = TRUE,
+                     sm = "MD"))
+
+print(LDL_cal_ex, digits=2)
+
+forest(LDL_cal_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-50, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+
+# ------------------------------------------------------------------------------ #
+# Reload dataset
+# ------------------------------------------------------------------------------ #
+meta <- readxl::read_excel("Data_Veg diet_Meta-analysis_6May2023.xlsx")
+
+# ------------------------------------------------------------------------------ #
+# Transform variables into factor variables and add labels
+# ------------------------------------------------------------------------------ #
+meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)` <- factor(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`,
+                                                                                levels = c(0,1,2),
+                                                                                labels = c('No',
+                                                                                           'Yes',
+                                                                                           'No information on physical activity'))
+
+# ------------------------------------------------------------------------------ #
+# Transform variables to numeric variables
+# ------------------------------------------------------------------------------ #
+meta$`LDL_Int_Mean ch_mmol/L` <- as.numeric(meta$`LDL_Int_Mean ch_mmol/L`)
+meta$`LDL_Int_SD_ch_mmol/L` <- as.numeric(meta$`LDL_Int_SD_ch_mmol/L`)
+meta$`LDL_Con_Mean ch_mmol/L` <- as.numeric(meta$`LDL_Con_Mean ch_mmol/L`)
+meta$`LDL_Con_SD_mmol/L` <- as.numeric(meta$`LDL_Con_SD_mmol/L`)
+
+meta$`LDL_Int_Mean ch_mg/dL` <- as.numeric(meta$`LDL_Int_Mean ch_mg/dL`)
+meta$`LDL_Int_SD_ch_mg/dL` <- as.numeric(meta$`LDL_Int_SD_ch_mg/dL`)
+meta$`LDL_Con_Mean ch_mg/dL` <- as.numeric(meta$`LDL_Con_Mean ch_mg/dL`)
+meta$`LDL_Con_SD_change_mg/dL` <- as.numeric(meta$`LDL_Con_SD_change_mg/dL`)
+
+# ------------------------------------------------------------------------------ #
+#Remove repeated values from the same study and studies without the outcome
+# ------------------------------------------------------------------------------ #
+
+#Barnard 2021
+meta[5,] <- NA
+meta[6,] <- NA
+meta[7,] <- NA
+
+#Bunner 2015
+meta[8,] <- NA
+meta[9,] <- NA
+
+#Liao
+meta[15,] <- NA
+
+#Mishra 2013
+meta[18,] <- NA
+
+#Nicholson 1999
+meta[19,] <- NA
+
+#Tang
+meta[23,] <- NA
+meta[24,] <- NA
+
+#Wright 2017
+meta[27,] <- NA
+
+#Remove missing values
+
+LDL_int_n_na <- na.omit(meta$LDL_n_Int)
+LDL_int_mean_na <- na.omit(meta$`LDL_Int_Mean ch_mg/dL`)
+LDL_int_sd_na <- na.omit(meta$`LDL_Int_SD_ch_mg/dL`)
+
+LDL_con_n_na <- na.omit(meta$LDL_n_Con)
+LDL_con_mean_na <- na.omit(meta$`LDL_Con_Mean ch_mg/dL`)
+LDL_con_sd_na <- na.omit(meta$`LDL_Con_SD_change_mg/dL`)
+
+author_na <- na.omit(meta$`Author, year`)
+
+Physical_activity <- na.omit(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`)
+
+#Forest plot for LDL grouped by physical activity_____________________________________________________
+LDL_ex <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                    LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                    studlab = author_na,
+                    byvar = Physical_activity,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(LDL_ex, digits=2)
+
+forest(LDL_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-70, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Exclude imputed data____________________________________________________________________________
+#Nicholson 1999
+meta[19,] <- NA
+
+#Ornish 1990
+meta[20,] <- NA
+
+#Shah
+meta[21,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Remove missing values
+
+LDL_int_n_na <- na.omit(meta$LDL_n_Int)
+LDL_int_mean_na <- na.omit(meta$`LDL_Int_Mean ch_mg/dL`)
+LDL_int_sd_na <- na.omit(meta$`LDL_Int_SD_ch_mg/dL`)
+
+LDL_con_n_na <- na.omit(meta$LDL_n_Con)
+LDL_con_mean_na <- na.omit(meta$`LDL_Con_Mean ch_mg/dL`)
+LDL_con_sd_na <- na.omit(meta$`LDL_Con_SD_change_mg/dL`)
+
+author_na <- na.omit(meta$`Author, year`)
+
+Physical_activity <- na.omit(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`)
+
+#Forest plot for LDL grouped by physical activity_____________________________________________________
+LDL_ex_ex <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                    LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                    studlab = author_na,
+                    byvar = Physical_activity,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(LDL_ex_ex, digits=2)
+
+forest(LDL_ex_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-50, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# ------------------------------------------------------------------------------ #
+# Forest plot for LDL grouped by medication changes
+# ------------------------------------------------------------------------------ #
+
+# ------------------------------------------------------------------------------ #
+# Reload dataset
+# ------------------------------------------------------------------------------ #
+meta <- readxl::read_excel("Data_Veg diet_Meta-analysis_6May2023.xlsx")
+
+meta$`Med change (0=N, 1=Y, 2=NI on med use)` <- factor(meta$`Med change (0=N, 1=Y, 2=NI on med use)`,
+                                                        levels = c(0,1,2),
+                                                        labels = c('No medication change',
+                                                                   'Had medication change',
+                                                                   'No information on medication use'))
+
+# ------------------------------------------------------------------------------ #
+# Transform variables to numeric variables
+# ------------------------------------------------------------------------------ #
+meta$`LDL_Int_Mean ch_mmol/L` <- as.numeric(meta$`LDL_Int_Mean ch_mmol/L`)
+meta$`LDL_Int_SD_ch_mmol/L` <- as.numeric(meta$`LDL_Int_SD_ch_mmol/L`)
+meta$`LDL_Con_Mean ch_mmol/L` <- as.numeric(meta$`LDL_Con_Mean ch_mmol/L`)
+meta$`LDL_Con_SD_mmol/L` <- as.numeric(meta$`LDL_Con_SD_mmol/L`)
+
+meta$`LDL_Int_Mean ch_mg/dL` <- as.numeric(meta$`LDL_Int_Mean ch_mg/dL`)
+meta$`LDL_Int_SD_ch_mg/dL` <- as.numeric(meta$`LDL_Int_SD_ch_mg/dL`)
+meta$`LDL_Con_Mean ch_mg/dL` <- as.numeric(meta$`LDL_Con_Mean ch_mg/dL`)
+meta$`LDL_Con_SD_change_mg/dL` <- as.numeric(meta$`LDL_Con_SD_change_mg/dL`)
+
+#Remove repeated values from the same study
+#Barnard 2021
+meta[5,] <- NA
+meta[7,] <- NA
+
+#Bunner 2015
+meta[9,] <- NA
+
+#Mishra
+meta[18,] <- NA
+
+#Nicholson 1999
+meta[19,] <- NA
+
+#Tang
+meta[24,] <- NA
+
+#Wright 2017
+meta[27,] <- NA
+
+#Remove missing values
+LDL_int_n_na <- na.omit(meta$LDL_n_Int)
+LDL_int_mean_na <- na.omit(meta$`LDL_Int_Mean ch_mg/dL`)
+LDL_int_sd_na <- na.omit(meta$`LDL_Int_SD_ch_mg/dL`)
+
+LDL_con_n_na <- na.omit(meta$LDL_n_Con)
+LDL_con_mean_na <- na.omit(meta$`LDL_Con_Mean ch_mg/dL`)
+LDL_con_sd_na <- na.omit(meta$`LDL_Con_SD_change_mg/dL`)
+
+author_na <- na.omit(meta$`Author, year`)
+Medication <- na.omit(meta$`Med change (0=N, 1=Y, 2=NI on med use)`)
+
+LDL_med <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                     LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                     studlab = author_na,
+                     byvar = Medication,
+                     print.byvar = TRUE,
+                     sm = "MD"))
+
+print(LDL_med, digits=2)
+
+forest(LDL_med,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-70, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Exclude imputed data_______________________________________________________________________________
+#Nicholson 1999
+meta[19,] <- NA
+
+#Ornish 1990
+meta[20,] <- NA
+
+#Shah
+meta[21,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Remove missing values
+LDL_int_n_na <- na.omit(meta$LDL_n_Int)
+LDL_int_mean_na <- na.omit(meta$`LDL_Int_Mean ch_mg/dL`)
+LDL_int_sd_na <- na.omit(meta$`LDL_Int_SD_ch_mg/dL`)
+
+LDL_con_n_na <- na.omit(meta$LDL_n_Con)
+LDL_con_mean_na <- na.omit(meta$`LDL_Con_Mean ch_mg/dL`)
+LDL_con_sd_na <- na.omit(meta$`LDL_Con_SD_change_mg/dL`)
+
+author_na <- na.omit(meta$`Author, year`)
+Medication <- na.omit(meta$`Med change (0=N, 1=Y, 2=NI on med use)`)
+
+LDL_med_ex <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                     LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                     studlab = author_na,
+                     byvar = Medication,
+                     print.byvar = TRUE,
+                     sm = "MD"))
+
+print(LDL_med_ex, digits=2)
+
+forest(LDL_med_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-50, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# ------------------------------------------------------------------------------ #
+# Forest plot for LDL grouped by analysis method
+# ------------------------------------------------------------------------------ #
+
+# ------------------------------------------------------------------------------ #
+# Reload dataset
+# ------------------------------------------------------------------------------ #
+meta <- readxl::read_excel("Data_Veg diet_Meta-analysis_6May2023.xlsx")
+
+
+meta$`LDL_ITT (-1=Completers no medication changes, 0=No, 1=Yes)` <- factor(meta$`LDL_ITT (-1=Completers no medication changes, 0=No, 1=Yes)`,
+                                                                            levels = c(-1,0,1),
+                                                                            labels = c('Completers with no medication changes',
+                                                                                       'Completers',
+                                                                                       'Intention-to-treat'))
+# ------------------------------------------------------------------------------ #
+# Transform variables to numeric variables
+# ------------------------------------------------------------------------------ #
+meta$`LDL_Int_Mean ch_mmol/L` <- as.numeric(meta$`LDL_Int_Mean ch_mmol/L`)
+meta$`LDL_Int_SD_ch_mmol/L` <- as.numeric(meta$`LDL_Int_SD_ch_mmol/L`)
+meta$`LDL_Con_Mean ch_mmol/L` <- as.numeric(meta$`LDL_Con_Mean ch_mmol/L`)
+meta$`LDL_Con_SD_mmol/L` <- as.numeric(meta$`LDL_Con_SD_mmol/L`)
+
+meta$`LDL_Int_Mean ch_mg/dL` <- as.numeric(meta$`LDL_Int_Mean ch_mg/dL`)
+meta$`LDL_Int_SD_ch_mg/dL` <- as.numeric(meta$`LDL_Int_SD_ch_mg/dL`)
+meta$`LDL_Con_Mean ch_mg/dL` <- as.numeric(meta$`LDL_Con_Mean ch_mg/dL`)
+meta$`LDL_Con_SD_change_mg/dL` <- as.numeric(meta$`LDL_Con_SD_change_mg/dL`)
+
+#Remove repeated values from the same study
+#Barnard 2021
+meta[5,] <- NA
+meta[7,] <- NA
+
+#Bunner 2015
+meta[9,] <- NA
+
+#Nicholson 1999
+meta[19,] <- NA
+
+#Tang
+meta[24,] <- NA
+
+#Wright 2017
+meta[27,] <- NA
+
+#Remove missing values
+LDL_int_n_na <- na.omit(meta$LDL_n_Int)
+LDL_int_mean_na <- na.omit(meta$`LDL_Int_Mean ch_mg/dL`)
+LDL_int_sd_na <- na.omit(meta$`LDL_Int_SD_ch_mg/dL`)
+
+LDL_con_n_na <- na.omit(meta$LDL_n_Con)
+LDL_con_mean_na <- na.omit(meta$`LDL_Con_Mean ch_mg/dL`)
+LDL_con_sd_na <- na.omit(meta$`LDL_Con_SD_change_mg/dL`)
+
+LDL_int_mean_na <- as.numeric(LDL_int_mean_na)
+LDL_int_sd_na <- as.numeric(LDL_int_sd_na)
+
+LDL_con_mean_na <- as.numeric(LDL_con_mean_na)
+LDL_con_sd_na <- as.numeric(LDL_con_sd_na)
+
+author_na <- na.omit(meta$`Author, year`)
+Analysis <- na.omit(meta$`LDL_ITT (-1=Completers no medication changes, 0=No, 1=Yes)`)
+
+LDL_ana <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                     LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                     studlab = author_na,
+                     byvar = Analysis,
+                     print.byvar = TRUE,
+                     sm = "MD"))
+
+print(LDL_ana, digits=2)
+
+forest(LDL_ana,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-70, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Exclude imputed data_______________________________________________________________________________
+#Nicholson 1999
+meta[19,] <- NA
+
+#Ornish 1990
+meta[20,] <- NA
+
+#Shah
+meta[21,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Remove missing values
+LDL_int_n_na <- na.omit(meta$LDL_n_Int)
+LDL_int_mean_na <- na.omit(meta$`LDL_Int_Mean ch_mg/dL`)
+LDL_int_sd_na <- na.omit(meta$`LDL_Int_SD_ch_mg/dL`)
+
+LDL_con_n_na <- na.omit(meta$LDL_n_Con)
+LDL_con_mean_na <- na.omit(meta$`LDL_Con_Mean ch_mg/dL`)
+LDL_con_sd_na <- na.omit(meta$`LDL_Con_SD_change_mg/dL`)
+
+author_na <- na.omit(meta$`Author, year`)
+Analysis <- na.omit(meta$`LDL_ITT (-1=Completers no medication changes, 0=No, 1=Yes)`)
+
+LDL_ana_ex <- (metacont(LDL_int_n_na, LDL_int_mean_na, LDL_int_sd_na, 
+                     LDL_con_n_na, LDL_con_mean_na, LDL_con_sd_na,
+                     studlab = author_na,
+                     byvar = Analysis,
+                     print.byvar = TRUE,
+                     sm = "MD"))
+
+print(LDL_ana_ex, digits=2)
+
+forest(LDL_ana_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-50, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+
+# ------------------------------------------------------------------------------ #
+# Meta-analysis for HbA1c
+# ------------------------------------------------------------------------------ #
+# Reload dataset
+# ------------------------------------------------------------------------------ #
+meta <- readxl::read_excel("Desktop/Universities/USYD/PhD/Meta-analysis_Veg diet_CVD/Manuscript writing/JAMA Network Open/May2023/Meta-analysis/Data_Veg diet_Meta-analysis_6May2023.xlsx")
+
+meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)` <- factor(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`,
+                                                           levels = c(0,1,2),
+                                                           labels = c('People at risk of CVD',
+                                                                      'T2DM',
+                                                                      'CVD'))
+
+meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)` <- factor(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`,
+                                                                      levels = c(0,1,2),
+                                                                      labels = c('Vegan',
+                                                                                 'Lacto-vegetarian',
+                                                                                 'Lacto-ovo vegetarian'))
+
+meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)` <- 
+        factor(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`,
+               levels = c(0,1,2),
+               labels = c('Usual diet',
+                          'Active intervention with no energy restriction',
+                          'Active intervention with energy restriction'))
+
+meta$`Calorie restriction (0=N, 1=Y)` <- factor(meta$`Calorie restriction (0=N, 1=Y)`,
+                                                levels = c(0,1),
+                                                labels = c('No',
+                                                           'Yes'))
+
+meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)` <- factor(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`,
+                                                                                levels = c(0,1,2),
+                                                                                labels = c('No',
+                                                                                           'Yes',
+                                                                                           'No information on physical activity'))
+
+meta$`Med change (0=N, 1=Y, 2=NI on med use)` <- factor(meta$`Med change (0=N, 1=Y, 2=NI on med use)`,
+                                                        levels = c(0,1,2),
+                                                        labels = c('No medication change',
+                                                                   'Had medication change',
+                                                                   'No information on medication use'))
+
+meta$HbA1c_n_int <- as.numeric(meta$HbA1c_n_int)
+meta$`HbA1c_Int_Mean change` <- as.numeric(meta$`HbA1c_Int_Mean change`)
+meta$`HbA1c_Int_SD change` <- as.numeric(meta$`HbA1c_Int_SD change`)
+
+meta$HbA1c_n_con <- as.numeric(meta$HbA1c_n_con)
+meta$`HbA1c_Con_Mean change` <- as.numeric(meta$`HbA1c_Con_Mean change`)
+meta$`HbA1c_Con_SD change` <- as.numeric(meta$`HbA1c_Con_SD change`)
+
+#Remove repeated values from the same study or studies with not applicable values
+#Aldana
+meta[1,] <- NA
+
+#Barnard 2018
+meta[3,] <- NA
+
+#Barnard 2021
+meta[5,] <- NA
+meta[6,] <- NA
+meta[7,] <- NA
+
+#Bunner 2015
+meta[9,] <- NA
+
+#Burke
+meta[10,] <- NA
+
+#Garousi
+meta[11,] <- NA
+
+#Liao
+meta[15,] <- NA
+
+#Mahon
+meta[16,] <- NA
+
+#Mishra 2013
+meta[18,] <- NA
+
+#Ornish 1990
+meta[20,] <- NA
+
+#Sofi 2018
+meta[22,] <- NA
+
+#Tang 2013
+meta[23,] <- NA
+meta[24,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Wright 2017
+meta[27,] <- NA
+
+#Remove missing values
+Hb_int_n_na <- na.omit(meta$HbA1c_n_int)
+Hb_int_mean_na <- na.omit(meta$`HbA1c_Int_Mean change`)
+Hb_int_sd_na <- na.omit(meta$`HbA1c_Int_SD change`)
+
+Hb_con_n_na <- na.omit(meta$HbA1c_n_con)
+Hb_con_mean_na <- na.omit(meta$`HbA1c_Con_Mean change`)
+Hb_con_sd_na <- na.omit(meta$`HbA1c_Con_SD change`)
+
+author_na <- na.omit(meta$`Author, year`)
+Disease <- na.omit(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`)
+Diet <- na.omit(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`)
+Control <- na.omit(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`)
+
+Energy_restriction <- na.omit(meta$`Calorie restriction (0=N, 1=Y)`)
+Physical_activity <- na.omit(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`)
+Medication <- na.omit(meta$`Med change (0=N, 1=Y, 2=NI on med use)`)
+
+#Forest plot for HbA1c grouped by disease status_______________________________________________________
+Hb_dis <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                    Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                      studlab = author_na,
+                      byvar = Disease,
+                      print.byvar = TRUE,
+                      sm = "MD"))
+
+print(Hb_dis, digits=2)
+
+forest(Hb_dis,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 1.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# To save the plot in EPS format
+dev.copy2eps(file = "Figure 3.eps", width = 10, height = 9)
+
+# Close the EPS device
+dev.off()
+
+# New function to get adjusted tests for heteorgeneity - ADDED BY ALISTAIR
+res1<-M2_and_M3_p_values(xT = as.numeric(Hb_int_mean_na), xC = as.numeric(Hb_con_mean_na), nC = as.numeric(Hb_con_n_na), nT = as.numeric(Hb_int_n_na), sC = as.numeric(Hb_con_sd_na), sT = as.numeric(Hb_int_sd_na))
+res1[3,]
+# New Q value and p-value to report.
+
+funnel(Hb_dis, comb.fixed=FALSE)
+
+#Meta-regression control for baseline of HbA1c average
+meta$HbA1c_base_mean <- NA
+meta$Base_HbA1c_Int_Mean <- as.numeric(meta$Base_HbA1c_Int_Mean)
+meta$Base_HbA1c_Con_Mean <- as.numeric(meta$Base_HbA1c_Con_Mean)
+meta$HbA1c_base_mean <- (meta$Base_HbA1c_Int_Mean + meta$Base_HbA1c_Con_Mean)/2
+
+HbA1c_average_ba_na <- na.omit(meta$HbA1c_base_mean)
+
+HbA1c_average_base <- update(Hb_dis, byvar = HbA1c_average_ba_na, tau.common = TRUE, 
+                           comb.fixed = FALSE)
+
+b <- metareg(HbA1c_average_base)
+
+hb_ci<-func_calc_ci_pred(b)
+hb_ci
+
+hb_ci <- as.data.frame(hb_ci)
+
+ci.l = hb_ci$ci_lower
+ci.u = hb_ci$ci_upper
+
+df_ci.l <- data.frame(x_vals = b$X[,2],ci.l)
+df_ci.u <- data.frame(x_vals = b$X[,2],ci.u)
+
+bubble(b, 
+       xlab = "HbA1c baseline values (%)",
+       cex.studlab = 0.7,
+       bg = "green3",
+       xlim = c(5, 8.5),
+       ylim = c(-0.9, 0.2),
+       regline = TRUE,
+       studlab=TRUE,
+       box = TRUE)
+lines(df_ci.u[order(df_ci.u$x_vals),], col="blue4", lty=2)
+lines(df_ci.l[order(df_ci.l$x_vals),], col="blue4", lty=2)
+
+#Forest plot for HbA1c grouped by vegetarian diets_____________________________________________________
+Hb_veg <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                    Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                    studlab = author_na,
+                    byvar = Diet,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(Hb_veg, digits=2)
+
+forest(Hb_veg,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 1.5),
+       digits = 2,
+       digits.sd = 1, 
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for HbA1c grouped by control diet_____________________________________________________
+Hb_con <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                    Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                        studlab = author_na,
+                        byvar = Control,
+                        print.byvar = TRUE,
+                        sm = "MD"))
+
+print(Hb_con, digits=2)
+
+forest(Hb_con,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 1.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for HbA1c grouped by calorie restriction_____________________________________________________
+Hb_cal <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                    Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                     studlab = author_na,
+                     byvar = Energy_restriction,
+                     print.byvar = TRUE,
+                     sm = "MD"))
+
+print(Hb_cal, digits=2)
+
+forest(Hb_cal,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 1.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for HbA1c grouped by medication changes——————————————————————————————————————————————————————
+Hb_med <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                    Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                    studlab = author_na,
+                    byvar = Medication,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(Hb_med, digits=2)
+
+forest(Hb_med,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 1.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for HbA1c grouped by physical activity_____________________________________________________
+#Exclude study with no information on PA
+#Bunner
+meta[8,] <- NA
+
+#Remove missing values
+Hb_int_n_na <- na.omit(meta$HbA1c_n_int)
+Hb_int_mean_na <- na.omit(meta$`HbA1c_Int_Mean change`)
+Hb_int_sd_na <- na.omit(meta$`HbA1c_Int_SD change`)
+
+Hb_con_n_na <- na.omit(meta$HbA1c_n_con)
+Hb_con_mean_na <- na.omit(meta$`HbA1c_Con_Mean change`)
+Hb_con_sd_na <- na.omit(meta$`HbA1c_Con_SD change`)
+
+author_na <- na.omit(meta$`Author, year`)
+Physical_activity <- na.omit(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`)
+
+#Forest plot for HbA1c grouped by physical activity_____________________________________________________
+Hb_ex <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                   Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                   studlab = author_na,
+                   byvar = Physical_activity,
+                   print.byvar = TRUE,
+                   sm = "MD"))
+
+print(Hb_ex, digits=2)
+
+forest(Hb_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 1.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# ------------------------------------------------------------------------------ #
+# Meta-analysis for HbA1c excluding imputed data
+# ------------------------------------------------------------------------------ #
+# Reload dataset
+# ------------------------------------------------------------------------------ #
+meta <- readxl::read_excel("Desktop/Universities/USYD/PhD/Meta-analysis_Veg diet_CVD/Manuscript writing/JAMA Network Open/May2023/Meta-analysis/Data_Veg diet_Meta-analysis_6May2023.xlsx")
+
+meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)` <- factor(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`,
+                                                           levels = c(0,1,2),
+                                                           labels = c('People at risk of CVD',
+                                                                      'T2DM',
+                                                                      'CVD'))
+
+meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)` <- factor(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`,
+                                                                      levels = c(0,1,2),
+                                                                      labels = c('Vegan',
+                                                                                 'Lacto-vegetarian',
+                                                                                 'Lacto-ovo vegetarian'))
+
+meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)` <- 
+          factor(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`,
+                 levels = c(0,1,2),
+                 labels = c('Usual diet',
+                            'Active intervention with no energy restriction',
+                            'Active intervention with energy restriction'))
+
+meta$`Calorie restriction (0=N, 1=Y)` <- factor(meta$`Calorie restriction (0=N, 1=Y)`,
+                                                levels = c(0,1),
+                                                labels = c('No',
+                                                           'Yes'))
+
+meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)` <- factor(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`,
+                                                                                levels = c(0,1,2),
+                                                                                labels = c('No',
+                                                                                           'Yes',
+                                                                                           'No information on physical activity'))
+
+meta$`Med change (0=N, 1=Y, 2=NI on med use)` <- factor(meta$`Med change (0=N, 1=Y, 2=NI on med use)`,
+                                                        levels = c(0,1,2),
+                                                        labels = c('No medication change',
+                                                                   'Had medication change',
+                                                                   'No information on medication use'))
+
+meta$HbA1c_n_int <- as.numeric(meta$HbA1c_n_int)
+meta$`HbA1c_Int_Mean change` <- as.numeric(meta$`HbA1c_Int_Mean change`)
+meta$`HbA1c_Int_SD change` <- as.numeric(meta$`HbA1c_Int_SD change`)
+
+meta$HbA1c_n_con <- as.numeric(meta$HbA1c_n_con)
+meta$`HbA1c_Con_Mean change` <- as.numeric(meta$`HbA1c_Con_Mean change`)
+meta$`HbA1c_Con_SD change` <- as.numeric(meta$`HbA1c_Con_SD change`)
+
+#Remove repeated values from the same study or studies with not applicable values
+#Aldana
+meta[1,] <- NA
+
+#Barnard 2018
+meta[3,] <- NA
+
+#Barnard 2021
+meta[5,] <- NA
+meta[6,] <- NA
+meta[7,] <- NA
+
+#Bunner 2015
+meta[9,] <- NA
+
+#Burke
+meta[10,] <- NA
+
+#Garousi
+meta[11,] <- NA
+
+#Liao
+meta[15,] <- NA
+
+#Mahon
+meta[16,] <- NA
+
+#Mishra 2013
+meta[18,] <- NA
+
+#Ornish 1990
+meta[20,] <- NA
+
+#Sofi 2018
+meta[22,] <- NA
+
+#Tang 2013
+meta[23,] <- NA
+meta[24,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Wright 2017
+meta[27,] <- NA
+
+# Exclude imputed data________________________________________________________________________
+#Nicholson 1999
+meta[19,] <- NA
+
+#Shah
+meta[21,] <- NA
+
+#Remove missing values
+Hb_int_n_na <- na.omit(meta$HbA1c_n_int)
+Hb_int_mean_na <- na.omit(meta$`HbA1c_Int_Mean change`)
+Hb_int_sd_na <- na.omit(meta$`HbA1c_Int_SD change`)
+
+Hb_con_n_na <- na.omit(meta$HbA1c_n_con)
+Hb_con_mean_na <- na.omit(meta$`HbA1c_Con_Mean change`)
+Hb_con_sd_na <- na.omit(meta$`HbA1c_Con_SD change`)
+
+author_na <- na.omit(meta$`Author, year`)
+Disease <- na.omit(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`)
+Diet <- na.omit(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`)
+Control <- na.omit(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`)
+
+Energy_restriction <- na.omit(meta$`Calorie restriction (0=N, 1=Y)`)
+Physical_activity <- na.omit(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`)
+Medication <- na.omit(meta$`Med change (0=N, 1=Y, 2=NI on med use)`)
+
+#Forest plot for HbA1c grouped by disease status_______________________________________________________
+Hb_dis_ex <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                       Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                       studlab = author_na,
+                       byvar = Disease,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(Hb_dis_ex, digits=2)
+
+forest(Hb_dis_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 0.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for HbA1c grouped by vegetarian diets_____________________________________________________
+Hb_veg_ex <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                       Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                       studlab = author_na,
+                       byvar = Diet,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(Hb_veg_ex, digits=2)
+
+forest(Hb_veg_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 0.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for HbA1c grouped by control diets_____________________________________________________
+Hb_con_ex <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                       Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                       studlab = author_na,
+                       byvar = Control,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(Hb_con_ex, digits=2)
+
+forest(Hb_con_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 0.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for HbA1c grouped by calorie restriction_____________________________________________________
+Hb_cal_ex <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                       Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                       studlab = author_na,
+                       byvar = Energy_restriction,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(Hb_cal_ex, digits=2)
+
+forest(Hb_cal_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 0.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for HbA1c grouped by medication changes——————————————————————————————————————————————————————
+Hb_med_ex <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                       Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                       studlab = author_na,
+                       byvar = Medication,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(Hb_med_ex, digits=2)
+
+forest(Hb_med_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 0.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for HbA1c grouped by physical activity_____________________________________________________
+#Exclude study with no information on PA
+#Bunner
+meta[8,] <- NA
+
+#Remove missing values
+Hb_int_n_na <- na.omit(meta$HbA1c_n_int)
+Hb_int_mean_na <- na.omit(meta$`HbA1c_Int_Mean change`)
+Hb_int_sd_na <- na.omit(meta$`HbA1c_Int_SD change`)
+
+Hb_con_n_na <- na.omit(meta$HbA1c_n_con)
+Hb_con_mean_na <- na.omit(meta$`HbA1c_Con_Mean change`)
+Hb_con_sd_na <- na.omit(meta$`HbA1c_Con_SD change`)
+
+author_na <- na.omit(meta$`Author, year`)
+Physical_activity <- na.omit(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`)
+
+Hb_ex_ex <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                      Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                      studlab = author_na,
+                      byvar = Physical_activity,
+                      print.byvar = TRUE,
+                      sm = "MD"))
+
+print(Hb_ex_ex, digits=2)
+
+forest(Hb_ex_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 0.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# ------------------------------------------------------------------------------ #
+# Forest plot for HbA1c grouped by analysis method
+# ------------------------------------------------------------------------------ #
+# Reload dataset
+# ------------------------------------------------------------------------------ #
+meta <- readxl::read_excel("Desktop/Universities/USYD/PhD/Meta-analysis_Veg diet_CVD/Manuscript writing/JAMA Network Open/May2023/Meta-analysis/Data_Veg diet_Meta-analysis_6May2023.xlsx")
+
+meta$HbA1c_n_int <- as.numeric(meta$HbA1c_n_int)
+meta$`HbA1c_Int_Mean change` <- as.numeric(meta$`HbA1c_Int_Mean change`)
+meta$`HbA1c_Int_SD change` <- as.numeric(meta$`HbA1c_Int_SD change`)
+
+meta$HbA1c_n_con <- as.numeric(meta$HbA1c_n_con)
+meta$`HbA1c_Con_Mean change` <- as.numeric(meta$`HbA1c_Con_Mean change`)
+meta$`HbA1c_Con_SD change` <- as.numeric(meta$`HbA1c_Con_SD change`)
+
+#Remove repeated values from the same study or studies with not applicable values
+#Aldana
+meta[1,] <- NA
+
+#Barnard 2018
+meta[3,] <- NA
+
+#Barnard 2021
+meta[5,] <- NA
+meta[6,] <- NA
+meta[7,] <- NA
+
+#Bunner 2015
+meta[9,] <- NA
+
+#Burke
+meta[10,] <- NA
+
+#Garousi
+meta[11,] <- NA
+
+#Liao
+meta[15,] <- NA
+
+#Mahon
+meta[16,] <- NA
+
+#Ornish 1990
+meta[20,] <- NA
+
+#Sofi 2018
+meta[22,] <- NA
+
+#Tang 2013
+meta[23,] <- NA
+meta[24,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Wright 2017
+meta[27,] <- NA
+
+meta$`HbA1c_ITT (-1=Completers no medication changes, 0=N, 1=Y)` <- factor(meta$`HbA1c_ITT (-1=Completers no medication changes, 0=N, 1=Y)`,
+                                                                           levels = c(-1,0,1),
+                                                                           labels = c('Completers with no medication changes',
+                                                                                      'Completers',
+                                                                                      'Intention-to-treat'))
+
+#Remove missing values
+Hb_int_n_na <- na.omit(meta$HbA1c_n_int)
+Hb_int_mean_na <- na.omit(meta$`HbA1c_Int_Mean change`)
+Hb_int_sd_na <- na.omit(meta$`HbA1c_Int_SD change`)
+
+Hb_con_n_na <- na.omit(meta$HbA1c_n_con)
+Hb_con_mean_na <- na.omit(meta$`HbA1c_Con_Mean change`)
+Hb_con_sd_na <- na.omit(meta$`HbA1c_Con_SD change`)
+
+author_na <- na.omit(meta$`Author, year`)
+Analysis <- na.omit(meta$`HbA1c_ITT (-1=Completers no medication changes, 0=N, 1=Y)`)
+
+Hb_ana <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                    Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                    studlab = author_na,
+                    byvar = Analysis,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(Hb_ana, digits=2)
+
+forest(Hb_ana,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 1.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Further exclude imputed data________________________________________________________________________
+#Nicholson 1999
+meta[19,] <- NA
+
+#Shah
+meta[21,] <- NA
+
+#Remove missing values
+Hb_int_n_na <- na.omit(meta$HbA1c_n_int)
+Hb_int_mean_na <- na.omit(meta$`HbA1c_Int_Mean change`)
+Hb_int_sd_na <- na.omit(meta$`HbA1c_Int_SD change`)
+
+Hb_con_n_na <- na.omit(meta$HbA1c_n_con)
+Hb_con_mean_na <- na.omit(meta$`HbA1c_Con_Mean change`)
+Hb_con_sd_na <- na.omit(meta$`HbA1c_Con_SD change`)
+
+author_na <- na.omit(meta$`Author, year`)
+Analysis <- na.omit(meta$`HbA1c_ITT (-1=Completers no medication changes, 0=N, 1=Y)`)
+
+Hb_ana_ex <- (metacont(Hb_int_n_na, Hb_int_mean_na, Hb_int_sd_na, 
+                    Hb_con_n_na, Hb_con_mean_na, Hb_con_sd_na,
+                    studlab = author_na,
+                    byvar = Analysis,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(Hb_ana_ex, digits=2)
+
+forest(Hb_ana_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-2, 0.5),
+       digits = 2,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# ------------------------------------------------------------------------------ #
+# Meta-analysis for SBP
+# ------------------------------------------------------------------------------ #
+# Reload dataset
+# ------------------------------------------------------------------------------ #
+meta <- readxl::read_excel("Desktop/Universities/USYD/PhD/Meta-analysis_Veg diet_CVD/Manuscript writing/JAMA Network Open/May2023/Meta-analysis/Data_Veg diet_Meta-analysis_6May2023.xlsx")
+
+meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)` <- factor(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`,
+                                                           levels = c(0,1,2),
+                                                           labels = c('People at risk of CVD',
+                                                                      'T2DM',
+                                                                      'CVD'))
+
+meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)` <- factor(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`,
+                                                                      levels = c(0,1,2),
+                                                                      labels = c('Vegan',
+                                                                                 'Lacto-vegetarian',
+                                                                                 'Lacto-ovo vegetarian'))
+
+meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)` <- 
+        factor(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`,
+               levels = c(0,1,2),
+               labels = c('Usual diet',
+                          'Active intervention with no energy restriction',
+                          'Active intervention with energy restriction'))
+
+meta$`Calorie restriction (0=N, 1=Y)` <- factor(meta$`Calorie restriction (0=N, 1=Y)`,
+                                                levels = c(0,1),
+                                                labels = c('No',
+                                                           'Yes'))
+
+meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)` <- factor(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`,
+                                                                                levels = c(0,1,2),
+                                                                                labels = c('No',
+                                                                                           'Yes',
+                                                                                           'No information on physical activity'))
+
+meta$`Med change (0=N, 1=Y, 2=NI on med use)` <- factor(meta$`Med change (0=N, 1=Y, 2=NI on med use)`,
+                                                        levels = c(0,1,2),
+                                                        labels = c('No medication change',
+                                                                   'Had medication change',
+                                                                   'No information on medication use'))
+
+meta$SBP_n_int <- as.numeric(meta$SBP_n_int)
+meta$SBP_n_con <- as.numeric(meta$SBP_n_con)
+meta$`SBP_Int_Mean change` <- as.numeric(meta$`SBP_Int_Mean change`)
+meta$`SBP_Int_SD change` <- as.numeric(meta$`SBP_Int_SD change`)
+meta$`SBP_Con_Mean change` <- as.numeric(meta$`SBP_Con_Mean change`)
+meta$`SBP_Con_SD change` <- as.numeric(meta$`SBP_Con_SD change`)
+
+#Remove repeated values from the same study or studies with not applicable values
+#Barnard 2021
+meta[5,] <- NA
+meta[6,] <- NA
+meta[7,] <- NA
+
+#Bunner 2015
+meta[9,] <- NA
+
+#Burke
+meta[10,] <- NA
+
+#Kahleova 2010
+meta[12,] <- NA
+
+#Kahleova 2020
+meta[13,] <- NA
+
+#Mahon
+meta[16,] <- NA
+
+#Mishra 2013
+meta[18,] <- NA
+
+#Shah
+meta[21,] <- NA
+
+#Sofi 2018
+meta[22,] <- NA
+
+#Tang 2013
+meta[24,] <- NA
+
+#Wright 2017
+meta[27,] <- NA
+
+#Remove missing values
+SBP_int_n_na <- na.omit(meta$SBP_n_int)
+SBP_int_mean_na <- na.omit(meta$`SBP_Int_Mean change`)
+SBP_int_sd_na <- na.omit(meta$`SBP_Int_SD change`)
+
+SBP_con_n_na <- na.omit(meta$SBP_n_con)
+SBP_con_mean_na <- na.omit(meta$`SBP_Con_Mean change`)
+SBP_con_sd_na <- na.omit(meta$`SBP_Con_SD change`)
+
+author_na <- na.omit(meta$`Author, year`)
+Control <- na.omit(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`)
+Disease <- na.omit(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`)
+Diet <- na.omit(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`)
+Energy_restriction <- na.omit(meta$`Calorie restriction (0=N, 1=Y)`)
+Physical_activity <- na.omit(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`)
+Medication <- na.omit(meta$`Med change (0=N, 1=Y, 2=NI on med use)`)
+
+#Forest plot for HbA1c grouped by disease status_______________________________________________________
+SBP_dis <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                    SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                    studlab = author_na,
+                    byvar = Disease,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(SBP_dis, digits=2)
+
+forest(SBP_dis,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-35, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# New function to get adjusted tests for heteorgeneity - ADDED BY ALISTAIR
+res1<-M2_and_M3_p_values(xT = as.numeric(SBP_int_mean_na), xC = as.numeric(SBP_con_mean_na), nC = as.numeric(SBP_con_n_na), nT = as.numeric(SBP_int_n_na), sC = as.numeric(SBP_con_sd_na), sT = as.numeric(SBP_int_sd_na))
+res1[3,]
+# New Q value and p-value to report.
+
+# To save the plot in EPS format
+dev.copy2eps(file = "Figure 4.eps", width = 10, height = 9)
+
+# Close the EPS device
+dev.off()
+
+funnel(SBP_dis, comb.fixed=FALSE)
+
+#Meta-regression control for baseline of SBP average
+meta$SBP_base_mean <- NA
+meta$`Base SBP_Int_Mean` <- as.numeric(meta$`Base SBP_Int_Mean`)
+meta$Base_SBP_Con_Mean <- as.numeric(meta$Base_SBP_Con_Mean)
+meta$SBP_base_mean <- (meta$`Base SBP_Int_Mean` + meta$Base_SBP_Con_Mean)/2
+
+SBP_average_ba_na <- na.omit(meta$SBP_base_mean)
+
+SBP_average_base <- update(SBP_dis, byvar = SBP_average_ba_na, tau.common = TRUE, 
+                             comb.fixed = FALSE)
+
+c <- metareg(SBP_average_base)
+
+sbp_ci<-func_calc_ci_pred(c)
+sbp_ci
+
+sbp_ci <- as.data.frame(sbp_ci)
+
+ci.l = sbp_ci$ci_lower
+ci.u = sbp_ci$ci_upper
+
+df_ci.l <- data.frame(x_vals = c$X[,2],ci.l)
+df_ci.u <- data.frame(x_vals = c$X[,2],ci.u)
+
+bubble(c, 
+       xlab = "Systolic blood pressure baseline values (mmHg)",
+       cex.studlab = 0.7,
+       xlim = c(107.5, 145),
+       ylim = c(-12, 10),
+       bg = "green3",
+       regline = TRUE,
+       studlab=TRUE,
+       box = TRUE)
+lines(df_ci.u[order(df_ci.u$x_vals),], col="blue4", lty=2)
+lines(df_ci.l[order(df_ci.l$x_vals),], col="blue4", lty=2)
+
+#Forest plot for SBP grouped by vegetarian diets_____________________________________________________
+SBP_veg <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                     SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                    studlab = author_na,
+                    byvar = Diet,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(SBP_veg, digits=2)
+
+forest(SBP_veg,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-35, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for SBP grouped by control diet_____________________________________________________
+SBP_con <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                     SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                    studlab = author_na,
+                    byvar = Control,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(SBP_con, digits=2)
+
+forest(SBP_con,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-35, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for SBP grouped by calorie restriction_____________________________________________________
+SBP_cal <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                     SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                    studlab = author_na,
+                    byvar = Energy_restriction,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(SBP_cal, digits=2)
+
+forest(SBP_cal,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-35, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for SBP grouped by medication changes——————————————————————————————————————————————————————
+SBP_med <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                     SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                    studlab = author_na,
+                    byvar = Medication,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(SBP_med, digits=2)
+
+forest(SBP_med,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-35, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# Exclude studies with no information on PA
+# Bunner
+meta[8,] <- NA
+
+# Liao
+meta[15,] <- NA
+
+# Tang
+meta[23,] <- NA
+
+#Remove missing values
+SBP_int_n_na <- na.omit(meta$SBP_n_int)
+SBP_int_mean_na <- na.omit(meta$`SBP_Int_Mean change`)
+SBP_int_sd_na <- na.omit(meta$`SBP_Int_SD change`)
+
+SBP_con_n_na <- na.omit(meta$SBP_n_con)
+SBP_con_mean_na <- na.omit(meta$`SBP_Con_Mean change`)
+SBP_con_sd_na <- na.omit(meta$`SBP_Con_SD change`)
+
+author_na <- na.omit(meta$`Author, year`)
+Physical_activity <- na.omit(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`)
+
+#Forest plot for SBP grouped by physical activity_____________________________________________________
+SBP_ex <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                    SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                    studlab = author_na,
+                    byvar = Physical_activity,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(SBP_ex, digits=2)
+
+forest(SBP_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-35, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for SBP grouped by physical activity exclude imputed values_____________________________________________________
+#Further exclude imputed data________________________________________________________________________
+#Nicholson 1999
+meta[19,] <- NA
+
+#Ornish 1990
+meta[20,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Remove missing values
+SBP_int_n_na <- na.omit(meta$SBP_n_int)
+SBP_int_mean_na <- na.omit(meta$`SBP_Int_Mean change`)
+SBP_int_sd_na <- na.omit(meta$`SBP_Int_SD change`)
+
+SBP_con_n_na <- na.omit(meta$SBP_n_con)
+SBP_con_mean_na <- na.omit(meta$`SBP_Con_Mean change`)
+SBP_con_sd_na <- na.omit(meta$`SBP_Con_SD change`)
+
+author_na <- na.omit(meta$`Author, year`)
+Physical_activity <- na.omit(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`)
+
+SBP_ex_ex <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                       SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                       studlab = author_na,
+                       byvar = Physical_activity,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(SBP_ex_ex, digits=2)
+
+forest(SBP_ex_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-15, 15),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# ------------------------------------------------------------------------------ #
+# Meta-analysis for SBP
+# ------------------------------------------------------------------------------ #
+# Reload dataset
+# ------------------------------------------------------------------------------ #
+meta <- readxl::read_excel("Desktop/Universities/USYD/PhD/Meta-analysis_Veg diet_CVD/Manuscript writing/JAMA Network Open/May2023/Meta-analysis/Data_Veg diet_Meta-analysis_6May2023.xlsx")
+
+meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)` <- factor(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`,
+                                                           levels = c(0,1,2),
+                                                           labels = c('People at risk of CVD',
+                                                                      'T2DM',
+                                                                      'CVD'))
+
+meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)` <- factor(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`,
+                                                                      levels = c(0,1,2),
+                                                                      labels = c('Vegan',
+                                                                                 'Lacto-vegetarian',
+                                                                                 'Lacto-ovo vegetarian'))
+
+meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)` <- 
+          factor(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`,
+                 levels = c(0,1,2),
+                 labels = c('Usual diet',
+                            'Active intervention with no energy restriction',
+                            'Active intervention with energy restriction'))
+
+meta$`Calorie restriction (0=N, 1=Y)` <- factor(meta$`Calorie restriction (0=N, 1=Y)`,
+                                                levels = c(0,1),
+                                                labels = c('No',
+                                                           'Yes'))
+
+meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)` <- factor(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`,
+                                                                                levels = c(0,1,2),
+                                                                                labels = c('No',
+                                                                                           'Yes',
+                                                                                           'No information on physical activity'))
+
+meta$`Med change (0=N, 1=Y, 2=NI on med use)` <- factor(meta$`Med change (0=N, 1=Y, 2=NI on med use)`,
+                                                        levels = c(0,1,2),
+                                                        labels = c('No medication change',
+                                                                   'Had medication change',
+                                                                   'No information on medication use'))
+
+meta$SBP_n_int <- as.numeric(meta$SBP_n_int)
+meta$SBP_n_con <- as.numeric(meta$SBP_n_con)
+meta$`SBP_Int_Mean change` <- as.numeric(meta$`SBP_Int_Mean change`)
+meta$`SBP_Int_SD change` <- as.numeric(meta$`SBP_Int_SD change`)
+meta$`SBP_Con_Mean change` <- as.numeric(meta$`SBP_Con_Mean change`)
+meta$`SBP_Con_SD change` <- as.numeric(meta$`SBP_Con_SD change`)
+
+#Remove repeated values from the same study or studies with not applicable values
+#Barnard 2021
+meta[5,] <- NA
+meta[6,] <- NA
+meta[7,] <- NA
+
+#Bunner 2015
+meta[9,] <- NA
+
+#Burke
+meta[10,] <- NA
+
+#Kahleova 2010
+meta[12,] <- NA
+
+#Kahleova 2020
+meta[13,] <- NA
+
+#Mahon
+meta[16,] <- NA
+
+#Mishra 2013
+meta[18,] <- NA
+
+#Shah
+meta[21,] <- NA
+
+#Sofi 2018
+meta[22,] <- NA
+
+#Tang 2013
+meta[24,] <- NA
+
+#Wright 2017
+meta[27,] <- NA
+
+#Further exclude imputed data________________________________________________________________________
+#Nicholson 1999
+meta[19,] <- NA
+
+#Ornish 1990
+meta[20,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Remove missing values
+SBP_int_n_na <- na.omit(meta$SBP_n_int)
+SBP_int_mean_na <- na.omit(meta$`SBP_Int_Mean change`)
+SBP_int_sd_na <- na.omit(meta$`SBP_Int_SD change`)
+
+SBP_con_n_na <- na.omit(meta$SBP_n_con)
+SBP_con_mean_na <- na.omit(meta$`SBP_Con_Mean change`)
+SBP_con_sd_na <- na.omit(meta$`SBP_Con_SD change`)
+
+author_na <- na.omit(meta$`Author, year`)
+Control <- na.omit(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`)
+Disease <- na.omit(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`)
+Diet <- na.omit(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`)
+Energy_restriction <- na.omit(meta$`Calorie restriction (0=N, 1=Y)`)
+Medication <- na.omit(meta$`Med change (0=N, 1=Y, 2=NI on med use)`)
+
+#Forest plot for SBP grouped by disease status exclude imputed values_______________________________________________________
+SBP_dis_ex <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                        SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                       studlab = author_na,
+                       byvar = Disease,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(SBP_dis_ex, digits=2)
+
+forest(SBP_dis_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-25, 15),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for SBP grouped by vegetarian diets exclude imputed values_____________________________________________________
+SBP_veg_ex <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                        SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                       studlab = author_na,
+                       byvar = Diet,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(SBP_veg_ex, digits=2)
+
+forest(SBP_veg_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-25, 15),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for SBP grouped by control diets exclude imputed values_____________________________________________________
+SBP_con_ex <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                        SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                        studlab = author_na,
+                        byvar = Control,
+                        print.byvar = TRUE,
+                        sm = "MD"))
+
+print(SBP_con_ex, digits=2)
+
+forest(SBP_con_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-25, 15),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for SBP grouped by calorie restriction exclude imputed values_____________________________________________________
+SBP_cal_ex <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                        SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                       studlab = author_na,
+                       byvar = Energy_restriction,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(SBP_cal_ex, digits=2)
+
+forest(SBP_cal_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-25, 15),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+
+#Forest plot for SBP grouped by medication changes exclude imputed values_______________________________________
+SBP_med_ex <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                        SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                       studlab = author_na,
+                       byvar = Medication,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(SBP_med_ex, digits=2)
+
+forest(SBP_med_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-25, 15),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# ------------------------------------------------------------------------------ #
+# Forest plot for SBP grouped by analysis method
+# ------------------------------------------------------------------------------ #
+# Reload dataset
+# ------------------------------------------------------------------------------ #
+meta <- readxl::read_excel("Desktop/Universities/USYD/PhD/Meta-analysis_Veg diet_CVD/Manuscript writing/JAMA Network Open/May2023/Meta-analysis/Data_Veg diet_Meta-analysis_6May2023.xlsx")
+
+meta$SBP_n_int <- as.numeric(meta$SBP_n_int)
+meta$SBP_n_con <- as.numeric(meta$SBP_n_con)
+meta$`SBP_Int_Mean change` <- as.numeric(meta$`SBP_Int_Mean change`)
+meta$`SBP_Int_SD change` <- as.numeric(meta$`SBP_Int_SD change`)
+meta$`SBP_Con_Mean change` <- as.numeric(meta$`SBP_Con_Mean change`)
+meta$`SBP_Con_SD change` <- as.numeric(meta$`SBP_Con_SD change`)
+
+meta$`SBP_ITT (-1=Completers no medication changes, 0=N, 1=Y)` <- factor(meta$`SBP_ITT (-1=Completers no medication changes, 0=N, 1=Y)`,
+                                                                           levels = c(-1,0,1),
+                                                                           labels = c('Completers with no medication changes',
+                                                                                      'Completers',
+                                                                                      'Intention-to-treat'))
+#Remove repeated values from the same study
+#Barnard 2021
+meta[5,] <- NA
+meta[7,] <- NA
+
+#Bunner 2015
+meta[9,] <- NA
+
+#Burke
+meta[10,] <- NA
+
+#Kahleova 2010
+meta[12,] <- NA
+
+#Kahleova 2020
+meta[13,] <- NA
+
+#Mahon
+meta[16,] <- NA
+
+#Shah 2018
+meta[21,] <- NA
+
+#Sofi 2018
+meta[22,] <- NA
+
+#Tang 2013
+meta[24,] <- NA
+
+#Wright 2017
+meta[27,] <- NA
+
+SBP_int_n_na <- na.omit(meta$SBP_n_int)
+SBP_int_mean_na <- na.omit(meta$`SBP_Int_Mean change`)
+SBP_int_sd_na <- na.omit(meta$`SBP_Int_SD change`)
+
+SBP_con_n_na <- na.omit(meta$SBP_n_con)
+SBP_con_mean_na <- na.omit(meta$`SBP_Con_Mean change`)
+SBP_con_sd_na <- na.omit(meta$`SBP_Con_SD change`)
+
+author_na <- na.omit(meta$`Author, year`)
+Analysis <- na.omit(meta$`SBP_ITT (-1=Completers no medication changes, 0=N, 1=Y)`)
+Analysis <- as.character(Analysis)
+
+SBP_ana <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                     SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                    studlab = author_na,
+                    byvar = Analysis,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(SBP_ana, digits=2)
+
+forest(SBP_ana,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-35, 30),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Further exclude imputed data_______________________________________________________________________
+#Nicholson 1999
+meta[19,] <- NA
+
+#Ornish 1990
+meta[20,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Remove missing values
+SBP_int_n_na <- na.omit(meta$SBP_n_int)
+SBP_int_mean_na <- na.omit(meta$`SBP_Int_Mean change`)
+SBP_int_sd_na <- na.omit(meta$`SBP_Int_SD change`)
+
+SBP_con_n_na <- na.omit(meta$SBP_n_con)
+SBP_con_mean_na <- na.omit(meta$`SBP_Con_Mean change`)
+SBP_con_sd_na <- na.omit(meta$`SBP_Con_SD change`)
+
+author_na <- na.omit(meta$`Author, year`)
+Analysis <- na.omit(meta$`SBP_ITT (-1=Completers no medication changes, 0=N, 1=Y)`)
+Analysis <- as.character(Analysis)
+
+SBP_ana_ex <- (metacont(SBP_int_n_na, SBP_int_mean_na, SBP_int_sd_na, 
+                        SBP_con_n_na, SBP_con_mean_na, SBP_con_sd_na,
+                       studlab = author_na,
+                       byvar = Analysis,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(SBP_ana_ex, digits=2)
+
+forest(SBP_ana_ex,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed =FALSE,
+       xlim = c(-25, 15),
+       digits = 1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# ------------------------------------------------------------------------------ #
+# Meta-analysis on body weight
+# ------------------------------------------------------------------------------ #
+# Reload dataset
+# ------------------------------------------------------------------------------ #
+meta <- readxl::read_excel("Desktop/Universities/USYD/PhD/Meta-analysis_Veg diet_CVD/Manuscript writing/JAMA Network Open/May2023/Meta-analysis/Data_Veg diet_Meta-analysis_6May2023.xlsx")
+
+meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)` <- factor(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`,
+                                                           levels = c(0,1,2),
+                                                           labels = c('People at risk of CVD',
+                                                                      'T2DM',
+                                                                      'CVD'))
+
+meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)` <- factor(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`,
+                                                                      levels = c(0,1,2),
+                                                                      labels = c('Vegan',
+                                                                                 'Lacto-vegetarian',
+                                                                                 'Lacto-ovo vegetarian'))
+
+meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)` <- 
+        factor(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`,
+               levels = c(0,1,2),
+               labels = c('Usual diet',
+                          'Active intervention with no energy restriction',
+                          'Active intervention with energy restriction'))
+
+meta$`Calorie restriction (0=N, 1=Y)` <- factor(meta$`Calorie restriction (0=N, 1=Y)`,
+                                                levels = c(0,1),
+                                                labels = c('No',
+                                                           'Yes'))
+
+meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)` <- factor(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`,
+                                                                                levels = c(0,1,2),
+                                                                                labels = c('No',
+                                                                                           'Yes',
+                                                                                           'No information on physical activity'))
+
+meta$`Med change (0=N, 1=Y, 2=NI on med use)` <- factor(meta$`Med change (0=N, 1=Y, 2=NI on med use)`,
+                                                        levels = c(0,1,2),
+                                                        labels = c('No medication change',
+                                                                   'Had medication change',
+                                                                   'No information on medication use'))
+
+meta$Wt_int_n <- as.numeric(meta$Wt_int_n)
+meta$Wt_con_n <- as.numeric(meta$Wt_con_n)
+meta$`Wt change_Int_Mean` <- as.numeric(meta$`Wt change_Int_Mean`)
+meta$`Wt change_Int_SD` <- as.numeric(meta$`Wt change_Int_SD`)
+meta$`Wt change_Con_Mean` <- as.numeric(meta$`Wt change_Con_Mean`)
+meta$`Wt change_Con_SD` <- as.numeric(meta$`Wt change_Con_SD`)
+
+#Remove repeated values from the same study
+#Barnard 2021
+meta[5,] <- NA
+meta[6,] <- NA
+meta[7,] <- NA
+
+#Bunner 2015
+meta[9,] <- NA
+
+#Kahleova 2010
+meta[12,] <- NA
+
+#Lee 2016
+meta[14,] <- NA
+
+#Mishra 2013
+meta[18,] <- NA
+
+#Shah 2018
+meta[21,] <- NA
+
+#Tang 2013
+meta[24,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Wright 2017
+meta[27,] <- NA
+
+#Remove missing values
+wt_int_n_na <- na.omit(meta$Wt_int_n)
+wt_int_mean_na <- na.omit(meta$`Wt change_Int_Mean`)
+wt_int_sd_na <- na.omit(meta$`Wt change_Int_SD`)
+
+wt_con_n_na <- na.omit(meta$Wt_con_n)
+wt_con_mean_na <- na.omit(meta$`Wt change_Con_Mean`)
+wt_con_sd_na <- na.omit(meta$`Wt change_Con_SD`)
+
+author_na <- na.omit(meta$`Author, year`)
+Energy_restriction <- na.omit(meta$`Calorie restriction (0=N, 1=Y)`)
+Disease <- na.omit(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`)
+Control <- na.omit(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`)
+
+#Forest plot for weight grouped by disease status——————————————————————————————————————————————————————
+wt_dis <- (metacont(wt_int_n_na, wt_int_mean_na, wt_int_sd_na, 
+                    wt_con_n_na, wt_con_mean_na, wt_con_sd_na,
+                    studlab = author_na,
+                    byvar = Disease,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(wt_dis, digits=2)
+
+forest(wt_dis,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed = FALSE,
+       xlim = c(-25, 5),
+       prediction = FALSE,
+       digits=1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+# New function to get adjusted tests for heteorgeneity - ADDED BY ALISTAIR
+res1<-M2_and_M3_p_values(xT = as.numeric(wt_int_mean_na), xC = as.numeric(wt_con_mean_na), nC = as.numeric(wt_con_n_na), nT = as.numeric(wt_int_n_na), sC = as.numeric(wt_con_sd_na), sT = as.numeric(wt_int_sd_na))
+res1[3,]
+# New Q value and p-value to report.
+
+#Forest plot for weight grouped by control diet——————————————————————————————————————————————————————
+wt_con <- (metacont(wt_int_n_na, wt_int_mean_na, wt_int_sd_na, 
+                    wt_con_n_na, wt_con_mean_na, wt_con_sd_na,
+                    studlab = author_na,
+                    byvar = Control,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(wt_con, digits=2)
+
+forest(wt_con,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed = FALSE,
+       xlim = c(-25, 5),
+       prediction = FALSE,
+       digits=1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+#Forest plot for weight grouped by energy restriction——————————————————————————————————————————————————————
+wt_cal <- (metacont(wt_int_n_na, wt_int_mean_na, wt_int_sd_na, 
+                    wt_con_n_na, wt_con_mean_na, wt_con_sd_na,
+                      studlab = author_na,
+                      byvar = Energy_restriction,
+                      print.byvar = TRUE,
+                      sm = "MD")) 
+
+print(wt_cal, digits=2)
+
+forest(wt_cal,
+       col.random = "blue",
+       col.diamond = "light green",
+       col.diamond.lines = "light green",
+       comb.fixed = FALSE,
+       xlim = c(-25, 5),
+       prediction = FALSE,
+       digits=1,
+       digits.sd = 1,
+       common=F,
+       print.I2 = F,
+       print.pval.Q=F)
+
+funnel(wt_cal, comb.fixed=FALSE)
+
+#Meta-regression control for baseline of weight average
+meta$weight_base_mean <- NA
+meta$`Base Wt_Int_Mean` <- as.numeric(meta$`Base Wt_Int_Mean`)
+meta$`Base Wt_Con_Mean` <- as.numeric(meta$`Base Wt_Con_Mean`)
+meta$weight_base_mean <- (meta$`Base Wt_Int_Mean` + meta$`Base Wt_Con_Mean`)/2
+
+weight_average_ba_na <- na.omit(meta$weight_base_mean)
+
+weight_average_base <- update(wt_cal, byvar = weight_average_ba_na, tau.common = TRUE, 
+                           comb.fixed = FALSE)
+
+d <- metareg(weight_average_base)
+
+wt_ci<-func_calc_ci_pred(d)
+wt_ci
+
+wt_ci <- as.data.frame(wt_ci)
+
+ci.l = wt_ci$ci_lower
+ci.u = wt_ci$ci_upper
+
+df_ci.l <- data.frame(x_vals = d$X[,2],ci.l)
+df_ci.u <- data.frame(x_vals = d$X[,2],ci.u)
+
+bubble(d, 
+       xlab = "Weight baseline values (kg)",
+       cex.studlab = 0.7,
+       bg = "green3",
+       xlim = c(70, 105),
+       ylim = c(-12, 2),
+       regline = TRUE,
+       studlab=TRUE,
+       box = TRUE)
+lines(df_ci.u[order(df_ci.u$x_vals),], col="blue4", lty=2)
+lines(df_ci.l[order(df_ci.l$x_vals),], col="blue4", lty=2)
+
+#Further exclude imputed data_______________________________________________________________________
+#Nicholson 1999
+meta[19,] <- NA
+
+#Ornish 1990
+meta[20,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Remove missing values
+wt_int_n_na <- na.omit(meta$Wt_int_n)
+wt_int_mean_na <- na.omit(meta$`Wt change_Int_Mean`)
+wt_int_sd_na <- na.omit(meta$`Wt change_Int_SD`)
+
+wt_con_n_na <- na.omit(meta$Wt_con_n)
+wt_con_mean_na <- na.omit(meta$`Wt change_Con_Mean`)
+wt_con_sd_na <- na.omit(meta$`Wt change_Con_SD`)
+
+author_na <- na.omit(meta$`Author, year`)
+Energy_restriction <- na.omit(meta$`Calorie restriction (0=N, 1=Y)`)
+Disease <- na.omit(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`)
+Control <- na.omit(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`)
+
+#Forest plot for weight grouped by disease exclude imputed data——————————————————————————————————————————————————————
+wt_dis_ex <- (metacont(wt_int_n_na, wt_int_mean_na, wt_int_sd_na, 
+                       wt_con_n_na, wt_con_mean_na, wt_con_sd_na,
+                       studlab = author_na,
+                       byvar = Disease,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(wt_dis_ex, digits=2)
+
+meta::forest(wt_dis_ex,
+             col.random = "blue",
+             col.diamond = "light green",
+             col.diamond.lines = "light green",
+             comb.fixed =FALSE,
+             prediction = FALSE,
+             xlim = c(-15, 5),
+             digits=1,
+             digits.sd = 1,
+             common=F,
+             print.I2 = F,
+             print.pval.Q=F)
+
+#Forest plot for weight grouped by energy restriction exclude imputed data——————————————————————————————————————————————————————
+wt_cal_ex <- (metacont(wt_int_n_na, wt_int_mean_na, wt_int_sd_na, 
+                    wt_con_n_na, wt_con_mean_na, wt_con_sd_na,
+                    studlab = author_na,
+                    byvar = Energy_restriction,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(wt_cal_ex, digits=2)
+
+meta::forest(wt_cal_ex,
+             col.random = "blue",
+             col.diamond = "light green",
+             col.diamond.lines = "light green",
+             comb.fixed =FALSE,
+             prediction = FALSE,
+             xlim = c(-15, 5),
+             digits=1,
+             digits.sd = 1,
+             common=F,
+             print.I2 = F,
+             print.pval.Q=F)
+
+#Forest plot for weight grouped by control diet exclude imputed data——————————————————————————————————————————————————————
+wt_con_ex <- (metacont(wt_int_n_na, wt_int_mean_na, wt_int_sd_na, 
+                       wt_con_n_na, wt_con_mean_na, wt_con_sd_na,
+                       studlab = author_na,
+                       byvar = Control,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(wt_con_ex, digits=2)
+
+meta::forest(wt_con_ex,
+             col.random = "blue",
+             col.diamond = "light green",
+             col.diamond.lines = "light green",
+             comb.fixed =FALSE,
+             prediction = FALSE,
+             xlim = c(-15, 5),
+             digits=1,
+             digits.sd = 1,
+             common=F,
+             print.I2 = F,
+             print.pval.Q=F)
+
+# ------------------------------------------------------------------------------ #
+# Meta-analysis of energy intake in studies with no energy restriction
+# ------------------------------------------------------------------------------ #
+# Reload dataset
+# ------------------------------------------------------------------------------ #
+meta <- readxl::read_excel("Desktop/Universities/USYD/PhD/Meta-analysis_Veg diet_CVD/Manuscript writing/JAMA Network Open/May2023/Meta-analysis/Data_Veg diet_Meta-analysis_6May2023.xlsx")
+
+meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)` <- factor(meta$`Disease status (0=at risk, 1=T2DM, 2=CVD)`,
+                                                           levels = c(0,1,2),
+                                                           labels = c('People at risk of CVD',
+                                                                      'T2DM',
+                                                                      'CVD'))
+
+meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)` <- factor(meta$`Vegetarian diets (0=vegan, 1=lacto-veg, 2=lacto-ovo)`,
+                                                                      levels = c(0,1,2),
+                                                                      labels = c('Vegan',
+                                                                                 'Lacto-vegetarian',
+                                                                                 'Lacto-ovo vegetarian'))
+
+meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)` <- 
+        factor(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`,
+               levels = c(0,1,2),
+               labels = c('Usual diet',
+                          'Active intervention with no energy restriction',
+                          'Active intervention with energy restriction'))
+
+meta$`Calorie restriction (0=N, 1=Y)` <- factor(meta$`Calorie restriction (0=N, 1=Y)`,
+                                                levels = c(0,1),
+                                                labels = c('No',
+                                                           'Yes'))
+
+meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)` <- factor(meta$`Physical activity change (0=N, 1=Y, 2=NI on physical activity)`,
+                                                                                levels = c(0,1,2),
+                                                                                labels = c('No',
+                                                                                           'Yes',
+                                                                                           'No information on physical activity'))
+
+meta$`Med change (0=N, 1=Y, 2=NI on med use)` <- factor(meta$`Med change (0=N, 1=Y, 2=NI on med use)`,
+                                                        levels = c(0,1,2),
+                                                        labels = c('No medication change',
+                                                                   'Had medication change',
+                                                                   'No information on medication use'))
+
+meta$n_int_energy <- as.numeric(meta$n_int_energy)
+meta$n_con_energy <- as.numeric(meta$n_con_energy)
+meta$`Energy_Mean change_Int` <- as.numeric(meta$`Energy_Mean change_Int`)
+meta$`Energy_SD change_Int` <- as.numeric(meta$`Energy_SD change_Int`)
+meta$`Energy_Mean change_Con` <- as.numeric(meta$`Energy_Mean change_Con`)
+meta$`Energy_SD change_Con` <- as.numeric(meta$`Energy_SD change_Con`)
+
+#Remove repeated values from the same study
+#Exclude studies without outcome and studies with energy restriction
+#Aldana
+meta[1,] <- NA
+
+#Barnard 2021
+meta[5,] <- NA
+meta[6,] <- NA
+meta[7,] <- NA
+
+#Bunner 2015
+meta[8,] <- NA
+meta[9,] <- NA
+
+#Burke
+meta[10,] <- NA
+
+#Garousi
+meta[11,] <- NA
+
+#Kahleova 2010
+meta[12,] <- NA
+
+#Lee 2016
+meta[14,] <- NA
+
+#Liao
+meta[15,] <- NA
+
+#Mahon
+meta[16,] <- NA
+
+#Mishra 2013
+meta[18,] <- NA
+
+#Sofi
+meta[22,] <- NA
+
+#Tang 2013
+meta[23,] <- NA
+meta[24,] <- NA
+
+#Wright 2017
+meta[26,] <- NA
+meta[27,] <- NA
+
+#Remove missing values
+cal_int_n_na <- na.omit(meta$n_int_energy)
+cal_int_mean_na <- na.omit(meta$`Energy_Mean change_Int`)
+cal_int_sd_na <- na.omit(meta$`Energy_SD change_Int`)
+
+cal_con_n_na <- na.omit(meta$n_con_energy)
+cal_con_mean_na <- na.omit(meta$`Energy_Mean change_Con`)
+cal_con_sd_na <- na.omit(meta$`Energy_SD change_Con`)
+
+author_na <- na.omit(meta$`Author, year`)
+Energy_restriction <- na.omit(meta$`Calorie restriction (0=N, 1=Y)`)
+Control <- na.omit(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`)
+
+cal <- (metacont(cal_int_n_na, cal_int_mean_na, cal_int_sd_na, 
+                    cal_con_n_na, cal_con_mean_na, cal_con_sd_na,
+                    studlab = author_na,
+                    byvar = Control,
+                    print.byvar = TRUE,
+                    sm = "MD"))
+
+print(cal, digits=2)
+
+meta::forest(cal,
+             col.random = "blue",
+             col.diamond = "light green",
+             col.diamond.lines = "light green",
+             comb.fixed =FALSE,
+             xlim = c(-1000, 400),
+             digits=1,
+             digits.sd = 1,
+             common=F,
+             print.I2 = F,
+             print.pval.Q=F)
+
+funnel(cal, comb.fixed=FALSE)
+
+#Further exclude imputed data_______________________________________________________________________
+#Nicholson 1999
+meta[19,] <- NA
+
+#Ornish 1990
+meta[20,] <- NA
+
+#Shah
+meta[21,] <- NA
+
+#Toobert 2000
+meta[25,] <- NA
+
+#Remove missing values
+cal_int_n_na <- na.omit(meta$n_int_energy)
+cal_int_mean_na <- na.omit(meta$`Energy_Mean change_Int`)
+cal_int_sd_na <- na.omit(meta$`Energy_SD change_Int`)
+
+cal_con_n_na <- na.omit(meta$n_con_energy)
+cal_con_mean_na <- na.omit(meta$`Energy_Mean change_Con`)
+cal_con_sd_na <- na.omit(meta$`Energy_SD change_Con`)
+
+author_na <- na.omit(meta$`Author, year`)
+Energy_restriction <- na.omit(meta$`Calorie restriction (0=N, 1=Y)`)
+Control <- na.omit(meta$`Control diet (0=usual diet, 1=active intervention without energy restriction, 2=active intervention with energy restriction)`)
+
+cal_ex <- (metacont(cal_int_n_na, cal_int_mean_na, cal_int_sd_na, 
+                    cal_con_n_na, cal_con_mean_na, cal_con_sd_na,
+                       studlab = author_na,
+                       byvar = Control,
+                       print.byvar = TRUE,
+                       sm = "MD"))
+
+print(cal_ex, digits=2)
+
+meta::forest(cal_ex,
+             col.random = "blue",
+             col.diamond = "light green",
+             col.diamond.lines = "light green",
+             comb.fixed =FALSE,
+             xlim = c(-1000, 300),
+             digits=1,
+             digits.sd = 1,
+             common=F,
+             print.I2 = F,
+             print.pval.Q=F)
