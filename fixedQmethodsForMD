@@ -1,0 +1,265 @@
+# > version
+               # _                           
+                         
+# platform       x86_64-w64-mingw32          
+# arch           x86_64                      
+# os             mingw32                     
+# system         x86_64, mingw32             
+# status                                     
+# major          4                           
+# minor          0.3                         
+# year           2020                        
+# month          10                          
+# day            10                          
+# svn rev        79318                       
+# language       R                           
+# version.string R version 4.0.3 (2020-10-10)
+# nickname       Bunny-Wunnies Freak Out     
+
+
+## This file includes three functions by Ilyas Bakbergenuly  for  using a Q statistic with effective sample size weights (Q_SW) 
+## for  assessing heterogeneity in meta-analysis of Mean Differences (MD).
+## The first function, M2_and_M3_p_values, provides three p-values for a test of heterogeneity based on Q_SW. 
+## These p-values are based on three approximations to  the distribution of Q_SW: M2 and M3 are 2- amnd 3-moment approximations,
+## and F SW is the Farebrother approximation for the distribution of Q_SW. 
+##  The second function, metaMD_SDL,  estimates the between-study variance tau^2 using the SDL method and estimates
+##  overall effect and its confidence interval using the effective sample size weights (SSW SDL) and the inverse variance weights (IV SDL). 
+##  The third function, metaMD_CDL, provides similar outputs using the CDL method to estimate tau^2.
+##  Methods and results are described in the preprint by Kulinskaya, Hoaglin, Newman and Bakbergenuly (1920), url https://arxiv.org/abs/2010.11009 
+##  and in their paper "A Q statistic with constant weights for assessing heterogeneity in meta-analysis", Research Synthesis Methods, 2021.
+##  There is an example of meta-analysis using these functions at the end of this file.
+##  This example is discussed in Section 6 of the above paper. 
+
+
+
+############################################################################################################
+metaMD_SDL<-function(xT,xC,nC,nT,sC,sT){
+	#####################################################################################################
+   	N<-nT+nC
+	K<-length(N)
+	yi<-xT-xC
+	##unpooled within-study-variance
+	vi<-sT^2/nT+sC^2/nC  
+	#These approximations of Q are for fixed weights
+	nbar<-(nC*nT)/N
+	thetabar_SSW<-sum(yi*nbar)/sum(nbar)
+	wi_fixed<-nbar
+	Wfixed<-sum(wi_fixed)   
+	##This is our fixed Q statistic under assumption of fixed weights
+	fixedQ<-sum(wi_fixed*(yi-thetabar_SSW)^2)	
+	#############################################################################################################
+	wi_fixed<-nbar
+	Wfixed<-sum(wi_fixed) 
+	qi<-wi_fixed/Wfixed
+	##This is SDL method for estimation of tau2
+	tau2_SDL<-max(0, (fixedQ/Wfixed-sum(qi*(1-qi)*vi))/sum(qi*(1-qi)))	
+	###method based on fixed weights estimator of theta
+	varThetaBar_SDL<-sum((vi+tau2_SDL)*(nbar^2))/((sum(nbar))^2)
+	thetabar_SDL_L<-thetabar_SSW-qt(.975, df=K-1)*sqrt(varThetaBar_SDL)
+	thetabar_SDL_U<-thetabar_SSW+qt(.975, df=K-1)*sqrt(varThetaBar_SDL)
+	table_for_CDL_SSW <- data.frame(tau2_SDL,thetabar_SSW,thetabar_SDL_L,thetabar_SDL_U)
+	names(table_for_CDL_SSW)<-c("tau2","theta","ci.lb","ci.ub")
+    ###################################################################
+	thetabar_SDL_IV<-sum(yi/(vi+tau2_SDL))/sum(1/(vi+tau2_SDL))
+	w_SDL_IV<-1/(vi+tau2_SDL)
+	Ltheta_SDL_IV<-thetabar_SDL_IV-qnorm(.975)/sqrt(sum(w_SDL_IV))
+	Utheta_SDL_IV<-thetabar_SDL_IV+qnorm(.975)/sqrt(sum(w_SDL_IV))	
+	table_for_CDL_IV <- data.frame(tau2_SDL,thetabar_SDL_IV,Ltheta_SDL_IV,Utheta_SDL_IV)
+	names(table_for_CDL_IV)<-c("tau2","theta","ci.lb","ci.ub")
+	output <- rbind(table_for_CDL_SSW,table_for_CDL_IV)
+	colnames(output) <- c("tau2","estimate","ci.lb","ci.ub")
+	rownames(output) <- c("SSW SDL","IV SDL")
+	return (output)
+	}
+	
+	
+	
+metaMD_CDL<-function(xT,xC,nC,nT,sC,sT){
+	#####################################################################################################
+   	N<-nT+nC
+	K<-length(N)
+	yi<-xT-xC
+	##unpooled within-study-variance
+	vi<-sT^2/nT+sC^2/nC  
+	#These approximations of Q are for fixed weights
+	nbar<-(nC*nT)/N
+	thetabar_SSW<-sum(yi*nbar)/sum(nbar)
+	wi_IV<-1/vi
+	W_IV<-sum(wi_IV)
+	thetabar_IV<-sum(yi*wi_IV)/sum(wi_IV)
+	IV_Q<-sum(wi_IV*(yi-thetabar_IV)^2)
+	#############################################################################################################
+	###Improved Q statistics for mean difference for inverse-variance weights###
+	#Corrected DerSimonian and Laird method
+	##Welch approximation under null hypothesis
+	K<-length(N)
+	w_Welch_IV<-(sT^2/nT+sC^2/nC)^(-1)
+	W_Welch_IV<-sum(w_Welch_IV)
+	W2_Welch_IV<-sum(w_Welch_IV^2)
+	x_Welch_IV<-yi
+	xbar_Welch_IV<-sum(x_Welch_IV*w_Welch_IV)/W_Welch_IV
+	p_Welch_IV<-1-w_Welch_IV/W_Welch_IV
+	g_Welch_IV<-sC^2/(nC^2*(nC-1))+sT^2/(nT^2*(nT-1))
+	M1_Welch_IV<-K-1+2*sum(w_Welch_IV^2*g_Welch_IV*p_Welch_IV^2)
+	M2_Welch_IV<-2*(K-1)+14*sum(w_Welch_IV^2*g_Welch_IV*p_Welch_IV^2)
+	M3_Welch_IV<-8*(K-1)+120*sum(w_Welch_IV^2*g_Welch_IV*p_Welch_IV^2)
+	f2_Welch_IV<-(2*(K-3)*M1_Welch_IV^2+4*(K-1)*M2_Welch_IV)/((K-1)*M2_Welch_IV-2*M1_Welch_IV^2)
+	c_Welch_IV<-M1_Welch_IV*(f2_Welch_IV-2)/f2_Welch_IV   
+	pval_Welch_IV<-suppressWarnings((1-pf(IV_Q/c_Welch_IV,K-1,f2_Welch_IV,ncp=0,lower.tail=FALSE,log.p = FALSE)))
+
+	###########################################################################################
+	A=sum(w_Welch_IV^2*g_Welch_IV*p_Welch_IV^2)
+	B=sum(w_Welch_IV^3*g_Welch_IV*p_Welch_IV*(1-2*w_Welch_IV/W_Welch_IV+W2_Welch_IV/(W_Welch_IV^2)))
+	tau2_CDL<-max((IV_Q-(K-1)-2*A)/(W_Welch_IV-W2_Welch_IV/W_Welch_IV),0)  
+
+	##################################################################
+	###method based on fixed weights estimator of theta
+	varThetaBar_CDL<-sum((vi+tau2_CDL)*(nbar^2))/((sum(nbar))^2)
+	thetabar_CDL_L<-thetabar_SSW-qt(.975, df=K-1)*sqrt(varThetaBar_CDL)
+	thetabar_CDL_U<-thetabar_SSW+qt(.975, df=K-1)*sqrt(varThetaBar_CDL)
+	table_for_CDL_SSW <- data.frame(tau2_CDL,thetabar_SSW,thetabar_CDL_L,thetabar_CDL_U)
+	names(table_for_CDL_SSW)<-c("tau2","theta","ci.lb","ci.ub")
+    ###################################################################
+	thetabar_CDL_IV<-sum(yi/(vi+tau2_CDL))/sum(1/(vi+tau2_CDL))
+	w_CDL_IV<-1/(vi+tau2_CDL)
+	Ltheta_CDL_IV<-thetabar_CDL_IV-qnorm(.975)/sqrt(sum(w_CDL_IV))
+	Utheta_CDL_IV<-thetabar_CDL_IV+qnorm(.975)/sqrt(sum(w_CDL_IV))	
+	table_for_CDL_IV <- data.frame(tau2_CDL,thetabar_CDL_IV,Ltheta_CDL_IV,Utheta_CDL_IV)
+	names(table_for_CDL_IV)<-c("tau2","theta","ci.lb","ci.ub")
+	output <- rbind(table_for_CDL_SSW,table_for_CDL_IV)
+	colnames(output) <- c("tau2","estimate","ci.lb","ci.ub")
+	rownames(output) <- c("SSW CDL","IV CDL")
+	return (output)
+}	
+
+
+M2_and_M3_p_values<-function(xT,xC,nC,nT,sC,sT){
+	#####################################################################################################
+   	N<-nT+nC
+	K<-length(N)
+	yi<-xT-xC
+	##unpooled within-study-variance
+	vi<-sT^2/nT+sC^2/nC  
+	#These approximations of Q are for fixed weights
+	nbar<-(nC*nT)/N
+	wi_fixed<-nbar
+	Wfixed<-sum(wi_fixed)   
+	thetabar_SSW<-sum(yi*nbar)/sum(nbar)
+	##This is our fixed Q statistic under assumption of fixed weights
+	fixedQ<-sum(wi_fixed*(yi-thetabar_SSW)^2)
+
+	##function for approximation of Q by Biggerstaff and Jackson 2008
+	CDF_F_SW<-function(yi,vi,nbar,tau2){
+	   o =length(yi)   
+	   ### HERE we are separating a from sigma2
+	   a = nbar ### this are the fixed weights
+	   W = diag(a)
+	   w = matrix(a, ncol = 1)
+	   w_plus = sum(a)
+	   A = W - (1/w_plus) * w %*% t(w)
+	   Y = matrix(yi, ncol = 1)
+	   Q = t(Y) %*% A %*% Y
+	   c1=sum(a)-sum(a^2)/sum(a)
+	   c2=sum(a*vi)-sum(a^2*vi)/sum(a) 
+	   #This is the non null variance matrix. We take vi+tau^2 if non-null needed
+	   Sigma = diag(vi+tau2)
+	   S = (Sigma^0.5) %*% A %*% Sigma^0.5
+	   lambda = eigen(S)$values ### these are eigenvalues
+	   Fx=CompQuadForm::farebrother(Q, lambda[-o])$Qq ## this produces CDF of Q hence P(Q>x)
+	   Px<-Fx
+	   return(Px)   
+	}	
+	
+	
+	p_values_F_SW<-CDF_F_SW(yi=yi,vi=vi,nbar=nbar,tau2=0)
+	
+	
+	
+	moments_of_fixed_Q<-function(vi,tau2,nbar){
+	   #function for double sum
+	   double_summation=function(q1,q2){
+	   double_sum=sum(q1%*%t(q2))-sum(diag(q1%*%t(q2)))
+	   return(double_sum)
+	   }
+	   ##function for triple sum
+	   triple_summation=function(q1,q2,q3){
+	   triple_sum=0
+	   for(i in 1:length(q1)){
+	   for(j in 1:length(q2)){
+	   for(t in 1:length(q3)){
+	   if(i!=j&i!=t&j!=t)  triple_sum=triple_sum+q1[i]*q2[j]*q3[t] 
+	   }}}
+	   return(triple_sum)
+	   }
+	   wi_fixed<-nbar
+	   Wfixed<-sum(wi_fixed) 
+	   qi<-wi_fixed/Wfixed
+	   ##################################################
+	   M2i=vi+tau2 
+	   M3i=0
+	   M4i=3*vi^2+6*vi*tau2+3*tau2^2
+	   M6i=15*vi^3+15*3*vi^2*tau2+15*vi*3*tau2^2+15*tau2^3
+	   #####################################################################    
+	   ##first estimated moment of Q statistic based on true sigma2 and tau2, formula 2.2 based on mean difference
+	   EQ1<-Wfixed*sum(qi*(1-qi)*(vi+tau2)) 
+	   ##second estimated moment of Q statistic based on true sigma2 and tau2 based on mean difference
+	   A=sum(qi^2*(1-qi)^2*(M4i-M2i^2))+(sum(qi*(1-qi)*M2i))^2
+	   B=0   
+	   C=2*double_summation(qi^2*M2i,M2i*qi^2)
+	   EQ2=Wfixed^2*(A-2*B+C)   
+	   ##third estimated moment of Q statistic based on true sigma2 and tau2 based on mean difference
+	   EQ3=Wfixed^3*(sum(qi^3*(1-qi)^3*(M6i-3*M4i*M2i+2*M2i^3))+
+	   3*(sum(qi*(1-qi)*M2i)*(sum(qi^2*(1-qi)^2*(M4i-M2i^2))))+(sum(qi*(1-qi)*M2i))^3-
+	   6*double_summation(qi^2*(1-qi)*M3i,qi^2*(1-qi)*M3i)+
+	   12*double_summation(qi^3*(1-qi)*M4i,qi^2*M2i)+
+	   6*triple_summation(qi*(1-qi)*M2i,qi^2*M2i,qi^2*M2i)-
+	   4*double_summation(qi^3*M3i,qi^3*M3i)-
+	   8*triple_summation(qi^2*M2i,qi^2*M2i,qi^2*M2i))  
+	   res<-c(EQ1,EQ2,EQ3)
+	   return(res)
+	}
+
+    ##so we have first three estimated moments from each simulation i under H0
+	EQ1_underH0<-moments_of_fixed_Q(vi=vi,tau2=0,nbar=nbar)[1]
+	EQ2_underH0<-moments_of_fixed_Q(vi=vi,tau2=0,nbar=nbar)[2]
+	EQ3_underH0<-moments_of_fixed_Q(vi=vi,tau2=0,nbar=nbar)[3]
+	############################################################################################### 
+	##two moment approximation under H0
+	c_two_moment_approximation_underH0<-(EQ2_underH0-EQ1_underH0^2)/(2*EQ1_underH0)
+	p_two_moment_approximation_underH0<-(2*EQ1_underH0^2)/(EQ2_underH0-EQ1_underH0^2)
+	#these moments include tau^2, so this p-value is under the alternative hypothesis  
+    p_value_from_two_moment_approximation_underH0<-NA	
+	p_value_from_two_moment_approximation_underH0=1-pchisq(fixedQ/c_two_moment_approximation_underH0, df=p_two_moment_approximation_underH0)
+	### calculate p values 
+	##Three moment chi square approximation by Solomon and Stephens (1977)
+	##Match three moments to find c,r,p
+	equation_for_r_p<-function(x,EQ1,EQ2,EQ3) c(
+	F1=gamma(x[2]/2)*gamma(2*x[1]+x[2]/2)/(gamma(x[1]+x[2]/2))^2-EQ2/EQ1^2,
+	F2=(gamma(x[2]/2))^2*gamma(3*x[1]+x[2]/2)/(gamma(x[1]+x[2]/2))^3-EQ3/EQ1^3  
+	)   
+	##3-rd approximation using three moment approximation under H0
+	solving_three_moment_approximation_equation_underH0<- rootSolve::multiroot(f = equation_for_r_p,EQ1=EQ1_underH0,EQ2=EQ2_underH0,EQ3=EQ3_underH0, start = c(1,p_two_moment_approximation_underH0),positive = TRUE)  
+	r_three_moment_approximation_underH0<-solving_three_moment_approximation_equation_underH0$root[1]
+	p_three_moment_approximation_underH0<-solving_three_moment_approximation_equation_underH0$root[2]
+	c_three_moment_approximation_underH0<-(gamma(p_three_moment_approximation_underH0/2)*EQ1_underH0)/(2^r_three_moment_approximation_underH0*gamma(r_three_moment_approximation_underH0+p_three_moment_approximation_underH0/2))   
+	   
+   	check_on_NA_underH0<-is.na(r_three_moment_approximation_underH0)||is.na(p_three_moment_approximation_underH0)||is.na(c_three_moment_approximation_underH0)
+
+	p_value_from_three_moment_approximation_underH0<-NA
+	if(!check_on_NA_underH0){  
+	##This p-value is under null hypothesis since moments do not include tau^2 when finding c and r
+	p_value_from_three_moment_approximation_underH0=1-pchisq(((fixedQ/c_three_moment_approximation_underH0)^{1/r_three_moment_approximation_underH0}), df=p_three_moment_approximation_underH0)
+	} 	
+	table_for_two_moment_approximation<-data.frame(fixedQ,p_value_from_two_moment_approximation_underH0)
+	names(table_for_two_moment_approximation)<-c("Q","p-value")
+	table_for_three_moment_approximation<-data.frame(fixedQ,p_value_from_three_moment_approximation_underH0)
+	names(table_for_three_moment_approximation)<-c("Q","p-value")
+	table_for_F_SW<-data.frame(fixedQ,p_values_F_SW)
+	names(table_for_F_SW)<-c("Q","p-value")
+
+	output<-rbind(table_for_two_moment_approximation,table_for_three_moment_approximation)
+	output<-rbind(output,table_for_F_SW)
+	colnames(output) <- c("Q","p-value")
+	rownames(output) <- c("M2","M3","F SW")
+	return (output)
+}
