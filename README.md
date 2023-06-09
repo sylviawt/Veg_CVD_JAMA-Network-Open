@@ -27,10 +27,10 @@ This work was presented at Nutrition 2022 with abstract published (DOI: 10.1093/
 
 ## Recommendations for Citation of Supporting Materials
 
--   **Recommended citation for manuscript**: Tian Wang, Cynthia M Kroeger, Sophie Cassidy, 
-    Sayan Mitra, Rosilene V Ribeiro, Shane Jose, Andrius Masedunskas, Alistair M Senior, 
-    Luigi Fontana. Vegetarian Dietary Patterns and Cardiometabolic Risk in People 
-    With or At High Risk of Cardiovascular Disease: A Systematic Review and Meta-analysis. 
-    Zenodo. 2023. DOI: 10.5281/zenodo.8017027
+    Tian Wang, Cynthia M Kroeger, Sophie Cassidy, Sayan Mitra, Rosilene V Ribeiro, Shane Jose, 
+    Andrius Masedunskas, Alistair M Senior, Luigi Fontana. R scripts for manuscript entitled 
+    "Vegetarian Dietary Patterns and Cardiometabolic Risk in People With or At High Risk of 
+    Cardiovascular Disease: A Systematic Review and Meta-analysis". Zenodo. 2023. 
+    DOI: 10.5281/zenodo.8017027
     
 [![DOI](https://zenodo.org/badge/649641333.svg)](https://zenodo.org/badge/latestdoi/649641333)
